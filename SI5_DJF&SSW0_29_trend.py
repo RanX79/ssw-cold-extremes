@@ -23,19 +23,19 @@ from scipy import stats
 # ================================================================
 PLOT_LEVEL = 100   # <--- SET TO 10 OR 100
 
-ERA5_U_FILE = Path(r"F:\data\ERA5_data\ERA5_u_daily_1940_2025_100_no229.nc")
+ERA5_U_FILE = Path(r"path/to/your/data/ERA5_u_daily_1940_2025_100_no229.nc")
 
 SEAS5_U_DIRS = {
-    10:  Path(r"F:\data\IFS_U10_daily"),
-    100: Path(r"F:\data\IFS_U100_daily"),
+    10:  Path(r"path/to/your/data/IFS_U10_daily"),
+    100: Path(r"path/to/your/data/IFS_U100_daily"),
 }
 SEAS5_FILE_TMPLS = {
     10:  "SEAS5_u10hPa_NH_{year}11_system51_m25_daily.nc",
     100: "SEAS5_u100hPa_NH_{year}11_system51_m25_daily.nc",
 }
 
-SEAS5_SSW_CSV_PATH = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
-ERA5_SSW_CSV_PATH  = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure\ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
+SEAS5_SSW_CSV_PATH = Path(r"path/to/your/data/SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+ERA5_SSW_CSV_PATH  = Path(r"path/to/your/data/ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
 
 START_YEAR       = 1981
 END_YEAR         = 2024
@@ -49,7 +49,7 @@ MONTHS_NDJFM     = [11, 12, 1, 2, 3]
 N_BOOT           = 5000
 RANDOM_SEED      = 42
 
-OUTPUT_DIR = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
+OUTPUT_DIR = Path(r"path/to/your/results")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 FIG_OUT = OUTPUT_DIR / f"SI5_DJF_SSW0_29_U{PLOT_LEVEL}_trend_bootstrap_{BASELINE_END}.pdf"
 
