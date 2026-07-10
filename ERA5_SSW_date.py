@@ -1,62 +1,54 @@
 # -*- coding: utf-8 -*-
 """
-ERA5 SSW 日期检测代码
-================================
-1. 读取 ERA5 daily 多层纬向风数据（已去除 2 月 29 日）；
-2. 先提取 10 hPa 层的纬向风数据；
-3. 提取 60°N 附近的纬向风，zonal mean，得到 10 hPa、60°N 的日平均纬向平均纬向风；
-4. 按 winter year（如 1981-1982）逐年提取 11 月至次年 3 月数据；
-5. 在每个 winter 时间序列中检测 SSW 日期：
-   - 定义为风从西风（u >= 0）转为东风（u < 0）的当天；
-   - 只统计 11 月至次年 3 月发生的事件；
-   - 两个独立事件之间要求至少有 20 天连续西风，以避免重复计数；
-   - Final Warming 过滤：若东风出现后在 4 月 30 日前西风不能连续恢复
-     至少 10 天，则认定为 Final Warming，不计入 SSW；
-6. 保留发生在 11 月、12 月、1 月、2 月、3 月的所有独立 SSW 日期；
-7. 同一 winter 内若满足间隔条件，可保留多个 SSW 事件；
-8. 输出"每年-每个事件"的 SSW 日期表，供后续合成分析使用。
+Identify Northern Hemisphere stratospheric sudden warming (SSW) dates
+from ERA5 daily zonal wind data.
+
+The script applies the standard 10-hPa, 60°N zonal-mean zonal-wind
+reversal criterion during November–March. Events that satisfy the
+final-warming criterion are excluded.
+
+Input:
+    Daily ERA5 zonal wind data containing pressure-level, latitude,
+    longitude, and time dimensions. Raw ERA5 data are not distributed
+    with this repository.
+
+Output:
+    CSV files containing all detected events and the retained NDJFM SSW
+    events, written to OUTPUT_DIR.
+
+Before running:
+    Update ERA5_U_FILE to the location of your downloaded ERA5 file.
+
+Run:
+    python 01_era5_ssw_dates.py
 """
 
-import numpy as np
-import xarray as xr
-import pandas as pd
-from pathlib import Path
 import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import xarray as xr
 
 warnings.filterwarnings("ignore")
 
-# ===============================
-# --- 配置参数 ---
-# ===============================
-U_FILE     = Path(r"F:\data\ERA5_data\ERA5_u_daily_1940_2025_10_no229.nc")
-OUTPUT_DIR = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
+# ---------------------------------------------------------------------
+# User configuration
+# ---------------------------------------------------------------------
+ERA5_U_FILE = Path("path/to/ERA5/u_daily_1940_2025_10hPa_no_feb29.nc")
+OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 START_YEAR = 1940
-END_YEAR   = 2024
+END_YEAR = 2024
+LATITUDE = 60
+TARGET_LEVEL = 10
+MIN_WESTERLY_DAYS = 20
+MIN_RECOVERY_DAYS = 10
+DETECTION_MONTHS = (11, 12, 1, 2, 3)
+TARGET_MONTHS = (11, 12, 1, 2, 3)
 
-LATITUDE          = 60
-TARGET_LEVEL      = 10
-
-MIN_WESTERLY_DAYS = 20   # 两次独立 SSW 之间所需最少连续西风天数
-MIN_RECOVERY_DAYS = 10   # Final Warming 判据：4 月 30 日前西风恢复需 ≥ 此值
-PRESSURE_LABEL    = f"{TARGET_LEVEL}hPa"
-
-DETECTION_MONTHS = [11, 12, 1, 2, 3]
-TARGET_MONTHS    = [11, 12, 1, 2, 3]
-
-print("=" * 80)
-print("ERA5 SSW 日期检测（含 Final Warming 过滤）")
-print(f"层次: {PRESSURE_LABEL}")
-print(f"纬度: {LATITUDE}°N")
-print("数据类型: ERA5 daily multi-level (no Feb 29)")
-print("检测范围: 11月-次年3月")
-print("最终保留月份: 11月、12月、1月、2月、3月")
-print(f"事件间隔要求: 至少 {MIN_WESTERLY_DAYS} 天连续西风")
-print(f"Final Warming 判据: 4月30日前西风恢复 < {MIN_RECOVERY_DAYS} 连续天 → 排除")
-print(f"分析时段: {START_YEAR}-{END_YEAR}")
-print("=" * 80)
-
+PRESSURE_LABEL = f"{TARGET_LEVEL}hPa"
 
 # ===============================
 # --- 工具函数 ---
