@@ -67,10 +67,10 @@ MONTHS_DJF = [11, 12, 1, 2, 3]
 BASELINE_START = 1981
 BASELINE_END   = 2010
 
-SEAS5_SSW_CSV = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
-ERA5_SSW_CSV  = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure\ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
+SEAS5_SSW_CSV = Path(r"path/to/your/data/SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+ERA5_SSW_CSV  = Path(r"path/to/your/data/ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
 
-OUTPUT_DIR = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
+OUTPUT_DIR = Path(r"path/to/your/results/")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 PNG_OUT = OUTPUT_DIR / f"SI1_SEAS5_ERA5_frequency_U_t2m_sliding_{BASELINE_END}.pdf"
@@ -106,8 +106,8 @@ MONTH_LABELS = ["Nov", "Dec", "Jan", "Feb", "Mar"]
 # ================================================================
 # CODE 2 SETTINGS — paths updated to daily file directory
 # ================================================================
-ERA5_U10_PATH       = Path(r"F:\data\ERA5_data\ERA5_u_daily_1940_2025_10_no229.nc")
-SEAS5_U10_DAILY_DIR = Path(r"F:\data\IFS_U10_daily")
+ERA5_U10_PATH       = Path(r"path/to/your/data/ERA5_u_daily_1940_2025_10_no229.nc")
+SEAS5_U10_DAILY_DIR = Path(r"path/to/your/data/IFS_U10_daily")
 U10_FILE_PATTERN    = "SEAS5_u10hPa_NH_{year}11_system51_m25_daily.nc"
 U_VAR_CANDIDATES    = ["u", "u10", "uwnd", "var131"]
 
@@ -120,8 +120,8 @@ MIN_DAYS_U10       = int(N_DAYS_U10 * MIN_VALID_FRAC_U10)
 # ================================================================
 # CODE 3 SETTINGS — paths updated to daily file directory
 # ================================================================
-ERA5_T2M_PATH       = Path(r"F:\data\ERA5_data\ERA5_t2m_daily_1940_2024_no229.nc")
-SEAS5_T2M_DAILY_DIR = Path(r"F:\data\IFS_t2m_daily")
+ERA5_T2M_PATH       = Path(r"path/to/your/data/ERA5_t2m_daily_1940_2024_no229.nc")
+SEAS5_T2M_DAILY_DIR = Path(r"path/to/your/data/IFS_t2m_daily")
 T2M_FILE_PATTERN    = "SEAS5_2mt_NH_{year}11_system51_m25_daily.nc"
 T2M_VAR_CANDIDATES  = ["t2m","2m_temperature"]
 
@@ -821,7 +821,7 @@ def compute_and_save_t2m():
     gc.collect()
     save_cache_t2m(NPZ_T2M, e_raw, e_det, s_raw, s_det)
 
-    print("T2m cache complete ✅")
+    print("T2m cache complete")
 
 
 # ================================================================
