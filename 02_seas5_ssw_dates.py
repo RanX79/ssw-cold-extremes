@@ -1,39 +1,54 @@
-# -*- coding: utf-8 -*-
-import numpy as np
-import xarray as xr
-import pandas as pd
-from pathlib import Path
+"""
+Identify stratospheric sudden warming (SSW) dates for the first
+25 members of the SEAS5 hindcast.
+
+The script identifies reversals of the 10-hPa, 60°N zonal-mean zonal
+wind during November–March, excludes final warmings, and writes
+member-wise SSW dates to CSV files.
+
+Input:
+    One daily SEAS5 zonal-wind NetCDF file per initialization year.
+    Raw SEAS5 data are not distributed with this repository.
+
+Output:
+    CSV files containing all member-wise events and the retained
+    NDJFM SSW events, written to OUTPUT_DIR.
+
+Before running:
+    Update U_DAILY_DIR to your directory containing the SEAS5 daily
+    zonal-wind files.
+
+Run:
+    python 02_seas5_ssw_dates.py
+"""
+
 import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import xarray as xr
 
 warnings.filterwarnings("ignore")
 
-# ================================================================
-# 配置参数
-# ================================================================
-PRESSURE_LEVEL = "10"   #
-
-U_DAILY_DIR = Path(rf"F:\data\IFS_U{PRESSURE_LEVEL}_daily")
-OUTPUT_DIR  = Path(r"F:\data\IFS_daily\SSW_results")
+# ---------------------------------------------------------------------
+# User configuration
+# ---------------------------------------------------------------------
+PRESSURE_LEVEL = 10
+U_DAILY_DIR = Path("path/to/SEAS5/u10_daily")
+OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-START_YEAR              = 1981
-END_YEAR                = 2024
-LATITUDE                = 60
-N_MEMBERS               = 25
-MIN_WESTERLY_DAYS       = 20   # 两次事件间西风间隔天数
-MIN_RECOVERY_DAYS       = 10   # Final Warming 判断：恢复西风最少连续天数
-PRESSURE_LABEL          = f"{PRESSURE_LEVEL}hPa"
+START_YEAR = 1981
+END_YEAR = 2024
+LATITUDE = 60
+N_MEMBERS = 25
+MIN_WESTERLY_DAYS = 20
+MIN_RECOVERY_DAYS = 10
+DETECTION_MONTHS = (11, 12, 1, 2, 3)
+TARGET_MONTHS = (11, 12, 1, 2, 3)
 
-DETECTION_MONTHS = [11, 12, 1, 2, 3]
-TARGET_MONTHS    = [11, 12, 1, 2, 3]
-
-print("=" * 80)
-print("SEAS5 前25个成员 SSW 日期检测（daily 输入版，含 Final Warming 过滤）")
-print(f"层次: {PRESSURE_LABEL}  纬度: {LATITUDE}°N  成员数: {N_MEMBERS}")
-print(f"分析时段: {START_YEAR}-{END_YEAR}")
-print(f"Final Warming 判据: 4月30日前西风恢复 < {MIN_RECOVERY_DAYS} 连续天 → 排除")
-print("=" * 80)
-
+PRESSURE_LABEL = f"{PRESSURE_LEVEL}hPa"
 
 # ================================================================
 # helpers
