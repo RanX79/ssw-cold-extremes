@@ -44,22 +44,22 @@ mpl.rcParams["hatch.color"] = "black"
 # PATHS
 # ================================================================
 SEAS5_SSW_CSV_PATH = Path(
-    r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv"
+    r"path/to/your/data/SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv"
 )
 
 ERA5_SSW_CSV_PATH = Path(
-    r"F:\data\paper_SSW_impacts_under_global_warming\figure\ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv"
+    r"path/to/your/data/ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv"
 )
 
 ERA5_T2M_FILE = Path(
-    r"F:\data\ERA5_data\ERA5_t2m_daily_1940_2024_no229.nc"
+    r"path/to/your/data/ERA5_t2m_daily_1940_2024_no229.nc"
 )
 
 SEAS5_T2M_DIR = Path(
-    r"F:\data\IFS_t2m_daily"
+    r"path/to/your/data/IFS_t2m_daily"
 )
 
-OUTPUT_DIR = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
+OUTPUT_DIR = Path(r"path/to/your/results")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OUT_NPZ_RAW = OUTPUT_DIR / "SI3_ERA5_outside_SEAS5_95spread_10yr_RAW_member.npz"
