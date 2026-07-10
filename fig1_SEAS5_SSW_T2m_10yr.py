@@ -1,0 +1,782 @@
+# -*- coding: utf-8 -*-
+import gc
+import numpy as np
+import xarray as xr
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import matplotlib as mpl
+
+from pathlib import Path
+from matplotlib.colors import TwoSlopeNorm
+import cartopy.crs as ccrs
+from cartopy.util import add_cyclic_point
+from scipy.stats import ttest_1samp
+
+plt.rcParams["font.family"] = "Arial"
+
+RUN_MODE = "RAW"      # first: "RAW" or "DETRENDED"，Run only one at a time，then PLOT
+# ================================================================
+# USER SETTINGS
+# ================================================================
+SSW_SOURCE = "SEAS5"
+
+SEAS5_SSW_CSV_PATH = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+ERA5_SSW_CSV_PATH  = Path(r"F:\data\ERA5_SSW_date\ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
+
+T2M_DIR    = Path(r"F:\data\IFS_t2m_daily")   #
+OUTPUT_DIR    = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+START_YEAR     = 1981
+END_YEAR       = 2024
+N_MEMBERS      = 25
+
+# climatology year
+BASELINE_START = 1981
+BASELINE_END   = 2010
+
+LAT_THRESHOLD  = 20
+ALPHA_SIG      = 0.05
+
+T2M_VAR_CANDIDATES = ["2m_temperature"]
+COMBINED_WINDOW    = (15, 59, "day 15 - day 59")
+
+REGION_BOXES = {
+    "NorthAmerica": {"lat_min": 45, "lat_max": 70, "lon_min": 220, "lon_max": 300},
+    "Europe":       {"lat_min": 45, "lat_max": 70, "lon_min":   0, "lon_max":  40},
+    "Siberia":      {"lat_min": 45, "lat_max": 70, "lon_min":  60, "lon_max": 120},
+}
+
+DECADE_PERIODS = [
+    (1981, 1990, "1981-1990"),
+    (1991, 2000, "1991-2000"),
+    (2001, 2010, "2001-2010"),
+    (2011, 2020, "2011-2020"),
+    (2021, 2024, "2021-2024"),
+]
+
+NPZ_RAW = OUTPUT_DIR / f"fig1_SEAS5_SSW_T2m_combined_raw_day15_59_10yr_{BASELINE_END}.npz"
+NPZ_DET = OUTPUT_DIR / f"fig1_SEAS5_SSW_T2m_combined_detrended_day15_59_10yr_{BASELINE_END}.npz"
+PNG_OUT = OUTPUT_DIR / f"fig1_SEAS5_SSW_T2m_10yr_{BASELINE_END}.pdf"
+
+mpl.rcParams['hatch.linewidth'] = 0.5
+mpl.rcParams['hatch.color']     = 'black'
+
+
+# ================================================================
+# helpers
+# ================================================================
+def get_var_name(ds, candidates):
+    for v in candidates:
+        if v in ds.data_vars:
+            return v
+    if len(ds.data_vars) == 1:
+        return list(ds.data_vars)[0]
+    raise ValueError(f"Cannot identify t2m variable, data_vars={list(ds.data_vars)}")
+
+
+def get_lat_lon_dim_names(da):
+    lat_c = [d for d in da.dims if "lat" in d.lower()]
+    lon_c = [d for d in da.dims if "lon" in d.lower()]
+    if not lat_c: raise ValueError(f"No lat dim, dims={da.dims}")
+    if not lon_c: raise ValueError(f"No lon dim, dims={da.dims}")
+    return lat_c[0], lon_c[0]
+
+
+def get_time_dim_name(da):
+    for name in ["valid_time", "time", "forecast_period"]:
+        if name in da.dims:
+            return name
+    raise ValueError(f"No time dim, dims={da.dims}, coords={list(da.coords)}")
+
+
+def ensure_member_dim_first(da):
+    if "number" not in da.dims:
+        raise ValueError(f"Missing 'number' dim, dims={da.dims}")
+    return da.transpose("number", *[d for d in da.dims if d != "number"])
+
+
+def safe_member_label(number_coord, idx):
+    try:    return int(number_coord[idx])
+    except: return idx + 1
+
+
+def month_day_key(ts):
+    ts = pd.Timestamp(ts)
+    return f"{ts.month:02d}-{ts.day:02d}"
+
+
+def _convert_lon_360_to_180(lon):
+    return lon - 360 if lon > 180 else lon
+
+
+def _add_region_boxes(ax):
+    for _, rb in REGION_BOXES.items():
+        lon_min = _convert_lon_360_to_180(rb["lon_min"])
+        lon_max = _convert_lon_360_to_180(rb["lon_max"])
+        for xs, ys in [
+            ([lon_min, lon_max], [rb["lat_min"], rb["lat_min"]]),
+            ([lon_min, lon_max], [rb["lat_max"], rb["lat_max"]]),
+            ([lon_min, lon_min], [rb["lat_min"], rb["lat_max"]]),
+            ([lon_max, lon_max], [rb["lat_min"], rb["lat_max"]]),
+        ]:
+            ax.plot(xs, ys, color='black', lw=1.4,
+                    transform=ccrs.PlateCarree(), zorder=6)
+
+
+# ================================================================
+# read SSW events
+# ================================================================
+def read_ssw_events():
+    if SSW_SOURCE.upper() == "SEAS5":
+        df = pd.read_csv(SEAS5_SSW_CSV_PATH)
+        df["ssw_date"] = pd.to_datetime(df["ssw_date"], errors="coerce")
+        for c in ["init_year", "member", "ssw_date"]:
+            if c not in df.columns:
+                raise ValueError(f"SEAS5 SSW CSV missing column: {c}")
+        df = df.dropna(subset=["ssw_date"]).copy()
+        df = df[(df["init_year"] >= START_YEAR) & (df["init_year"] <= END_YEAR)].copy()
+        df["member"] = df["member"].astype(int)
+        df = df.sort_values(["init_year", "member", "ssw_date"]).reset_index(drop=True)
+        print(f"Loaded SEAS5 SSW events: {len(df)}")
+        return df
+
+    elif SSW_SOURCE.upper() == "ERA5":
+        df0 = pd.read_csv(ERA5_SSW_CSV_PATH)
+        df0["ssw_date"] = pd.to_datetime(df0["ssw_date"], errors="coerce")
+        for c in ["init_year", "ssw_date"]:
+            if c not in df0.columns:
+                raise ValueError(f"ERA5 SSW CSV missing column: {c}")
+        df0 = df0.dropna(subset=["ssw_date"]).copy()
+        df0 = df0[(df0["init_year"] >= START_YEAR) & (df0["init_year"] <= END_YEAR)].copy()
+        df0 = df0.sort_values(["init_year", "ssw_date"]).reset_index(drop=True)
+
+        records = []
+        for _, row in df0.iterrows():
+            for member in range(N_MEMBERS):
+                records.append({
+                    "init_year": int(row["init_year"]),
+                    "member":    member,
+                    "ssw_date":  pd.Timestamp(row["ssw_date"])
+                })
+        del df0
+        df = pd.DataFrame(records)
+        del records
+        df = df.sort_values(["init_year", "member", "ssw_date"]).reset_index(drop=True)
+        print(f"Loaded ERA5 SSW events expanded to SEAS5 members: {len(df)}")
+        gc.collect()
+        return df
+
+    else:
+        raise ValueError("SSW_SOURCE must be 'SEAS5' or 'ERA5'")
+
+
+# ================================================================
+# Single-year loading: directly read the daily file
+# ================================================================
+def _load_one_year(year):
+    fp = T2M_DIR / f"SEAS5_2mt_NH_{year}11_system51_m25_daily.nc"
+
+    if not fp.exists():
+        print(f"  Missing: {fp.name}")
+        return None
+
+    try:
+        ds  = xr.open_dataset(fp)
+        var = get_var_name(ds, T2M_VAR_CANDIDATES)
+        da  = ds[var].load()
+        ds.close()
+        del ds
+
+        da = ensure_member_dim_first(da)
+        da = da.isel(number=slice(0, N_MEMBERS))
+
+        lat_name, lon_name = get_lat_lon_dim_names(da)
+        time_name          = get_time_dim_name(da)
+
+        # lat 
+        if da[lat_name].values[0] < da[lat_name].values[-1]:
+            da = da.isel({lat_name: slice(None, None, -1)})
+
+        # lon to -180~180
+        lon0 = da[lon_name].values
+        if np.nanmax(lon0) > 180:
+            lon_new  = np.where(lon0 > 180, lon0 - 360, lon0)
+            sort_idx = np.argsort(lon_new)
+            da       = da.isel({lon_name: sort_idx})
+            da       = da.assign_coords({lon_name: lon_new[sort_idx]})
+            del lon_new, sort_idx
+
+        lat_vals      = da[lat_name].values.copy()
+        lon_vals      = da[lon_name].values.copy()
+        times         = pd.to_datetime(da[time_name].values)
+        member_labels = [safe_member_label(da["number"].values, i)
+                         for i in range(da.sizes["number"])]
+        t2m_np        = da.values.astype(np.float32)
+        del da
+        gc.collect()
+
+        monthday      = np.array([month_day_key(t) for t in times])
+        member_to_idx = {m: i for i, m in enumerate(member_labels)}
+        time_to_idx   = {pd.Timestamp(t): j for j, t in enumerate(times)}
+
+        print(f"  Loaded: {fp.name}  shape={t2m_np.shape}")
+        return t2m_np, times, monthday, member_labels, member_to_idx, time_to_idx, lat_vals, lon_vals
+
+    except Exception as e:
+        print(f"  Failed: year={year} | {e}")
+        gc.collect()
+        return None
+
+def _build_baseline_clim_streaming():
+    print(f"\nBuilding baseline climatology (streaming): {BASELINE_START}-{BASELINE_END}")
+
+    doy_to_fields = {}
+    lat_vals = lon_vals = None
+
+    # ----------------------------
+    #  doy climatology
+    # ----------------------------
+    for year in range(BASELINE_START, BASELINE_END + 1):
+        result = _load_one_year(year)
+        if result is None:
+            continue
+
+        t2m_np, times, _, _, _, _, lv, lov = result
+
+        if lat_vals is None:
+            lat_vals = lv
+            lon_vals = lov
+
+        del lv, lov
+
+        ens_mean = t2m_np.mean(axis=0)  # (time, lat, lon)
+        del t2m_np
+
+        doys = pd.to_datetime(times).dayofyear.values
+
+        for i, doy in enumerate(doys):
+            doy_to_fields.setdefault(doy, []).append(
+                ens_mean[i].astype(np.float32)
+            )
+
+        del ens_mean, doys, times
+        gc.collect()
+
+    # ----------------------------
+    #  (365, lat, lon)
+    # ----------------------------
+    print("  Building raw daily climatology ...")
+
+    nlat, nlon = len(lat_vals), len(lon_vals)
+    max_doy = 366   # Consider leap years, handle them later.
+
+    clim_raw = np.full((max_doy, nlat, nlon), np.nan, dtype=np.float32)
+
+    for doy, fields in doy_to_fields.items():
+        stacked = np.stack(fields, axis=0)
+        clim_raw[doy - 1] = np.nanmean(stacked, axis=0)
+        del stacked
+
+    del doy_to_fields
+    gc.collect()
+
+    # ----------------------------
+    # rolling smoothing
+    # ----------------------------
+    print("  Applying rolling climatology (±5 days)...")
+
+    window = 11  # ±5 days
+    pad = window // 2
+
+    # circular padding to guarantee continuous operation throughout the year
+    clim_pad = np.concatenate([
+        clim_raw[-pad:],   # 
+        clim_raw,
+        clim_raw[:pad]     # 
+    ], axis=0)
+
+    clim_smooth = np.full_like(clim_raw, np.nan)
+
+    for i in range(max_doy):
+        clim_smooth[i] = np.nanmean(
+            clim_pad[i:i+window], axis=0
+        )
+
+    del clim_pad, clim_raw
+    gc.collect()
+
+    # ----------------------------
+    #  monthday key
+    # ----------------------------
+    print("  Mapping back to monthday...")
+
+    dates_ref = pd.date_range("2001-01-01", "2001-12-31")  
+    baseline_clim = {}
+
+    for d in dates_ref:
+        doy = d.dayofyear
+        key = f"{d.month:02d}-{d.day:02d}"
+        baseline_clim[key] = clim_smooth[doy - 1]
+
+    del clim_smooth
+    gc.collect()
+
+    print(f"  Done: {len(baseline_clim)} month-day keys (smoothed)")
+    return baseline_clim, lat_vals, lon_vals
+# ================================================================
+# minus climatology
+# ================================================================
+def build_anomalies_and_metadata_streaming(baseline_clim):
+    print("\n" + "=" * 70)
+    print("Loading & computing raw anomalies year by year ...")
+
+    anom_by_year = {}
+    meta_by_year = {}
+    lat_vals = lon_vals = None
+
+    for year in range(START_YEAR, END_YEAR + 1):
+        result = _load_one_year(year)
+        if result is None:
+            continue
+        t2m_np, times, monthday, member_labels, member_to_idx, time_to_idx, lv, lov = result
+
+        if lat_vals is None:
+            lat_vals = lv
+            lon_vals = lov
+        del lv, lov
+
+        _, T, nlat, nlon = t2m_np.shape
+        clim = np.full((T, nlat, nlon), np.nan, dtype=np.float32)
+        for i, key in enumerate(monthday):
+            if key in baseline_clim:
+                clim[i] = baseline_clim[key]
+
+        anom_by_year[year] = t2m_np - clim[None]
+        del t2m_np, clim
+
+        meta_by_year[year] = {
+            "times":         times,
+            "monthday":      monthday,
+            "member_to_idx": member_to_idx,
+            "time_to_idx":   time_to_idx,
+        }
+        del times, monthday, member_labels, member_to_idx, time_to_idx
+        gc.collect()
+
+    if not anom_by_year:
+        raise RuntimeError("No SEAS5 daily data loaded. Check T2M_DIR path.")
+
+    return anom_by_year, meta_by_year, lat_vals, lon_vals
+
+
+# ================================================================
+# detrended
+# ================================================================
+def detrend_anomalies_inplace(anom_by_year, meta_by_year):
+    print("\nDetrending anomalies in-place ...")
+
+    years    = sorted(anom_by_year.keys())
+    md_index = {}
+    for year in years:
+        for t_idx, key in enumerate(meta_by_year[year]["monthday"]):
+            md_index.setdefault(key, []).append((year, t_idx))
+
+    n_keys = len(md_index)
+    for ki, (key, entries) in enumerate(md_index.items()):
+        if (ki + 1) % 20 == 0 or ki == 0:
+            print(f"  detrend key {ki+1}/{n_keys}: {key}")
+        if len(entries) < 2:
+            continue
+
+        yr_vals = np.array([e[0] for e in entries], dtype=np.float64)
+        yr_mean = yr_vals.mean()
+        yr_c    = yr_vals - yr_mean
+
+        ens_stack = np.stack(
+            [anom_by_year[y][:, t_idx].mean(axis=0) for y, t_idx in entries],
+            axis=0
+        ).astype(np.float64)
+
+        denom = (yr_c ** 2).sum()
+        b     = (yr_c[:, None, None] * ens_stack).sum(axis=0) / denom
+        a     = ens_stack.mean(axis=0)
+        del ens_stack
+
+        for yr_val, t_idx in entries:
+            trend_val = (a + b * (yr_val - yr_mean)).astype(np.float32)
+            anom_by_year[yr_val][:, t_idx] -= trend_val[None]
+
+        del yr_vals, yr_mean, yr_c, b, a, trend_val
+        gc.collect()
+
+    del md_index
+    gc.collect()
+    print("  Detrending done.")
+
+
+# ================================================================
+# composite
+# ================================================================
+def calculate_composites_streaming(ssw_df, baseline_clim, lat_vals, lon_vals, detrend=False):
+    
+    mode_str = "detrended" if detrend else "raw"
+    print(f"\n{'='*70}")
+    print(f"Streaming composites ({mode_str}) ...")
+
+    nlat, nlon        = len(lat_vals), len(lon_vals)
+    d_start, d_end, _ = COMBINED_WINDOW
+
+    # samples
+    period_samples = {p_label: [] for _, _, p_label in DECADE_PERIODS}
+
+
+    if detrend:
+      
+        print("  Pass 1/2: computing detrend slopes ...")
+        md_years   = {}   # key → list of (year, ens_mean_field)
+        all_years  = []
+
+        for year in range(START_YEAR, END_YEAR + 1):
+            result = _load_one_year(year)
+            if result is None:
+                continue
+            t2m_np, times, monthday, _, _, _, _, _ = result
+
+            _, T, nlat_, nlon_ = t2m_np.shape
+            clim = np.full((T, nlat_, nlon_), np.nan, dtype=np.float32)
+            for i, key in enumerate(monthday):
+                if key in baseline_clim:
+                    clim[i] = baseline_clim[key]
+            anom = t2m_np - clim[None]   # (25, T, nlat, nlon)
+            del t2m_np, clim
+
+            ens_mean = anom.mean(axis=0)   # (T, nlat, nlon)
+            del anom
+
+            for i, key in enumerate(monthday):
+                md_years.setdefault(key, []).append((year, ens_mean[i].astype(np.float32)))
+            del ens_mean, monthday, times
+            all_years.append(year)
+            gc.collect()
+
+        print(f"  Computing slopes for {len(md_years)} month-day keys ...")
+        trend_slopes = {}   # key → (a, b) arrays of shape (nlat, nlon)
+        for key, entries in md_years.items():
+            yr_arr  = np.array([e[0] for e in entries], dtype=np.float64)
+            yr_mean = yr_arr.mean()
+            yr_c    = yr_arr - yr_mean
+            fields  = np.stack([e[1] for e in entries], axis=0).astype(np.float64)
+            denom   = (yr_c ** 2).sum()
+            b       = (yr_c[:, None, None] * fields).sum(axis=0) / denom
+            a       = fields.mean(axis=0)
+            trend_slopes[key] = (a.astype(np.float32), b.astype(np.float32))
+            del yr_arr, yr_c, fields, b, a
+        del md_years
+        gc.collect()
+        print("  Slopes done.")
+
+        print("  Pass 2/2: extracting composites with detrended anomalies ...")
+        for year in range(START_YEAR, END_YEAR + 1):
+            result = _load_one_year(year)
+            if result is None:
+                continue
+            t2m_np, times, monthday, member_labels, member_to_idx, time_to_idx, _, _ = result
+
+            _, T, nlat_, nlon_ = t2m_np.shape
+            clim = np.full((T, nlat_, nlon_), np.nan, dtype=np.float32)
+            for i, key in enumerate(monthday):
+                if key in baseline_clim:
+                    clim[i] = baseline_clim[key]
+            anom = t2m_np - clim[None]
+            del t2m_np, clim
+
+            # 
+            for i, key in enumerate(monthday):
+                if key in trend_slopes:
+                    a, b = trend_slopes[key]
+                    anom[:, i] -= (a + b * (year - np.mean(all_years)))[None]
+
+            _extract_samples_from_year(
+                year, anom, times, monthday,
+                member_to_idx, time_to_idx,
+                ssw_df, d_start, d_end, period_samples
+            )
+            del anom, times, monthday, member_labels, member_to_idx, time_to_idx
+            gc.collect()
+
+        del trend_slopes, all_years
+        gc.collect()
+
+    else:
+
+        for year in range(START_YEAR, END_YEAR + 1):
+            result = _load_one_year(year)
+            if result is None:
+                continue
+            t2m_np, times, monthday, member_labels, member_to_idx, time_to_idx, _, _ = result
+
+            _, T, nlat_, nlon_ = t2m_np.shape
+            clim = np.full((T, nlat_, nlon_), np.nan, dtype=np.float32)
+            for i, key in enumerate(monthday):
+                if key in baseline_clim:
+                    clim[i] = baseline_clim[key]
+            anom = t2m_np - clim[None]
+            del t2m_np, clim
+
+            _extract_samples_from_year(
+                year, anom, times, monthday,
+                member_to_idx, time_to_idx,
+                ssw_df, d_start, d_end, period_samples
+            )
+            del anom, times, monthday, member_labels, member_to_idx, time_to_idx
+            gc.collect()
+
+    # ── composite + t-test ────────────────────────────────────────
+    results = {}
+    for _, _, p_label in DECADE_PERIODS:
+        samples = period_samples[p_label]
+        if samples:
+            samples_3d = np.stack(samples, 0).astype(np.float32)
+            del samples
+            comp = np.nanmean(samples_3d, 0).astype(np.float32)
+            if samples_3d.shape[0] >= 2:
+                _, pvals = ttest_1samp(samples_3d, popmean=0.0, axis=0, nan_policy='omit')
+                not_sig  = ((~np.isfinite(pvals)) | (pvals >= ALPHA_SIG)).astype(np.int8)
+                del pvals
+            else:
+                not_sig = np.ones((nlat, nlon), dtype=np.int8)
+            n_samples = samples_3d.shape[0]
+            del samples_3d
+        else:
+            del samples
+            comp      = np.full((nlat, nlon), np.nan, dtype=np.float32)
+            not_sig   = np.ones((nlat, nlon), dtype=np.int8)
+            n_samples = 0
+
+        gc.collect()
+        results[p_label] = {"composite": comp, "count": n_samples, "notsig": not_sig}
+        print(f"  Period {p_label}: n samples used = {n_samples}")
+
+    del period_samples
+    gc.collect()
+    return results
+
+
+def _extract_samples_from_year(year, anom, times, monthday,
+                                member_to_idx, time_to_idx,
+                                ssw_df, d_start, d_end, period_samples):
+    tlen = anom.shape[1]
+
+    for _, _, p_label in DECADE_PERIODS:
+        p_start = next(s for s, e, l in DECADE_PERIODS if l == p_label)
+        p_end   = next(e for s, e, l in DECADE_PERIODS if l == p_label)
+        if not (p_start <= year <= p_end):
+            continue
+
+        dfp = ssw_df[(ssw_df["init_year"] == year)].copy()
+        for _, row in dfp.iterrows():
+            member = int(row["member"])
+            center = pd.Timestamp(row["ssw_date"]).normalize()
+
+            if member not in member_to_idx:     continue
+            if center not in time_to_idx:       continue
+
+            m_idx = member_to_idx[member]
+            c_idx = time_to_idx[center]
+            i0    = max(c_idx + d_start, 0)
+            i1    = min(c_idx + d_end + 1, tlen)
+
+            if (i1 - i0) != (d_end - d_start + 1):
+                continue
+
+            period_samples[p_label].append(
+                np.nanmean(anom[m_idx, i0:i1], axis=0).astype(np.float32)
+            )
+
+# ================================================================
+# save / load NPZ
+# ================================================================
+def save_results(npz_path, results, lat_vals, lon_vals):
+    save_dict = {"lat": lat_vals, "lon": lon_vals}
+    for _, _, p_label in DECADE_PERIODS:
+        save_dict[f"{p_label}__comp"]   = results[p_label]["composite"]
+        save_dict[f"{p_label}__count"]  = np.array(results[p_label]["count"])
+        save_dict[f"{p_label}__notsig"] = results[p_label]["notsig"]
+    np.savez(npz_path, **save_dict)
+    print(f"Saved: {npz_path}")
+
+
+def load_results(npz_path):
+    data     = np.load(npz_path, allow_pickle=False)
+    lat_vals = data["lat"]
+    lon_vals = data["lon"]
+    results  = {}
+    for _, _, p_label in DECADE_PERIODS:
+        results[p_label] = {
+            "composite": data[f"{p_label}__comp"],
+            "count":     int(data[f"{p_label}__count"]),
+            "notsig":    data[f"{p_label}__notsig"],
+        }
+    print(f"Loaded: {npz_path}")
+    return results, lat_vals, lon_vals
+
+
+# ================================================================
+# plot
+# ================================================================
+def plot_combined_figure(raw_results, det_results, lat_vals, lon_vals):
+    print(f"\nPlotting → {PNG_OUT}")
+
+    lat_full = lat_vals.copy()
+    lon      = lon_vals.copy()
+    nlat     = len(lat_vals)
+
+    lat_threshold_idx = np.argmax(lat_full < LAT_THRESHOLD)
+    if lat_threshold_idx == 0 and lat_full[0] < LAT_THRESHOLD:
+        lat_threshold_idx = nlat
+
+    norm   = TwoSlopeNorm(vmin=-2, vcenter=0.0, vmax=2)
+    nrows  = len(DECADE_PERIODS)
+    ncols  = 2
+    fig    = plt.figure(figsize=(13, 2.5 * nrows))
+    cs_ref = None
+
+    panel_labels = ['(a)', '(b)', '(c)', '(d)', '(e)',
+                    '(f)', '(g)', '(h)', '(i)', '(j)']
+
+    for r, (_, _, p_label) in enumerate(DECADE_PERIODS):
+        for c, (res, col_title) in enumerate(
+                zip([raw_results, det_results], ["Raw T2m", "Detrended T2m"])):
+
+            ax = fig.add_subplot(
+                nrows, ncols, r * ncols + c + 1,
+                projection=ccrs.PlateCarree()
+            )
+
+            arr = res[p_label]["composite"].copy().astype(np.float32)
+            arr[lat_threshold_idx:] = np.nan
+
+            z, x_             = add_cyclic_point(arr, coord=lon)
+            lon_grid, lat_grid = np.meshgrid(x_, lat_full)
+            del arr
+
+            cs = ax.pcolormesh(
+                lon_grid, lat_grid, z,
+                transform=ccrs.PlateCarree(),
+                cmap=plt.cm.RdBu_r, norm=norm, shading='auto'
+            )
+            cs_ref = cs
+            del z
+
+            ax.coastlines(linewidth=0.8)
+            ax.set_extent([-180, 180, LAT_THRESHOLD, 90], crs=ccrs.PlateCarree())
+
+            gl = ax.gridlines(draw_labels=True, linestyle='--', alpha=0.4, linewidth=0.4)
+            gl.xlocator      = plt.MultipleLocator(60)
+            gl.ylocator      = ticker.FixedLocator([30, 50, 70])
+            gl.top_labels    = False
+            gl.right_labels  = False
+            gl.left_labels   = (c == 0)
+            gl.bottom_labels = (r == nrows - 1)
+            gl.xlabel_style  = {'size': 10}
+            gl.ylabel_style  = {'size': 10}
+
+            if r == 0:
+                _add_region_boxes(ax)
+
+            not_sig = res[p_label]["notsig"].astype(float)
+            not_sig[lat_threshold_idx:] = np.nan
+            not_sig[not_sig == 0] = np.nan
+            not_sig_c, _ = add_cyclic_point(not_sig, coord=lon)
+            ax.contourf(
+                lon_grid, lat_grid, not_sig_c,
+                levels=[0.5, 1.5], hatches=['////'],
+                colors='none', transform=ccrs.PlateCarree()
+            )
+            del not_sig, not_sig_c, lon_grid, lat_grid
+
+            panel_idx = r * ncols + c
+            ax.text(
+                0.02, 0.98, panel_labels[panel_idx],
+                transform=ax.transAxes,
+                ha='left', va='top',
+                fontsize=12, fontweight='bold',
+                bbox=dict(facecolor='white', edgecolor='none', alpha=0.75, pad=1.5),
+                zorder=10
+            )
+
+            if r == 0:
+                ax.text(
+                    0.5, 1.25, col_title,
+                    transform=ax.transAxes,
+                    ha='center', va='bottom',
+                    fontsize=13, fontweight='bold'
+                )
+
+            n_evt = res[p_label]["count"]
+            ax.set_title(
+                f"{p_label} (n={n_evt})",
+                fontsize=12, fontweight='bold', pad=4
+            )
+
+            gc.collect()
+
+    fig.subplots_adjust(right=0.88, hspace=-0.6, wspace=0.08)
+    cbar_ax = fig.add_axes([0.90, 0.3, 0.015, 0.4])
+    cbar    = fig.colorbar(cs_ref, cax=cbar_ax)
+    cbar.set_label("T2m anomaly (K)", fontsize=12, fontweight='bold')
+
+    plt.savefig(PNG_OUT, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    del fig
+    gc.collect()
+    print(f"Saved: {PNG_OUT}")
+
+
+def main():
+    print("=" * 70)
+    print(f"SSW source = {SSW_SOURCE}  |  RUN_MODE = {RUN_MODE}")
+    print("=" * 70)
+
+    ssw_df = read_ssw_events()
+
+    #  baseline climatology
+    baseline_clim, lat_vals, lon_vals = _build_baseline_clim_streaming()
+
+    if RUN_MODE == "RAW":
+        if NPZ_RAW.exists():
+            print("\nRAW NPZ already exists, skip.")
+        else:
+            raw_results = calculate_composites_streaming(
+                ssw_df, baseline_clim, lat_vals, lon_vals, detrend=False)
+            save_results(NPZ_RAW, raw_results, lat_vals, lon_vals)
+            del raw_results
+            gc.collect()
+        print("\nRAW done. Set RUN_MODE='DETRENDED' and re-run.")
+
+    elif RUN_MODE == "DETRENDED":
+        if NPZ_DET.exists():
+            print("\nDETRENDED NPZ already exists, skip.")
+        else:
+            det_results = calculate_composites_streaming(
+                ssw_df, baseline_clim, lat_vals, lon_vals, detrend=True)
+            save_results(NPZ_DET, det_results, lat_vals, lon_vals)
+            del det_results
+            gc.collect()
+        print("\nDETRENDED done. Set RUN_MODE='PLOT' and re-run.")
+
+    elif RUN_MODE == "PLOT":
+        raw_results, lat_vals, lon_vals = load_results(NPZ_RAW)
+        det_results, _,        _        = load_results(NPZ_DET)
+        plot_combined_figure(raw_results, det_results, lat_vals, lon_vals)
+        del raw_results, det_results
+        gc.collect()
+
+    del ssw_df, baseline_clim, lat_vals, lon_vals
+    gc.collect()
+    print("\nAll done.")
+
+if __name__ == "__main__":
+    main()
