@@ -70,9 +70,9 @@ COL_ZERO  = "#8A8A8A"
 # ================================================================
 # USER SETTINGS
 # ================================================================
-SSW_CSV_PATH  = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
-T2M_DAILY_DIR = Path(r"F:\data\IFS_t2m_daily")
-OUTPUT_DIR    = Path(r"F:\data\paper_SSW_impacts_under_global _warming\figure")
+SSW_CSV_PATH  = Path(r"path/to/your/data/SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+T2M_DAILY_DIR = Path(r"path/to/your/data/IFS_t2m_daily")
+OUTPUT_DIR    = Path(r"path/to/your/results")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 START_YEAR     = 1981
 END_YEAR       = 2024
@@ -91,11 +91,11 @@ U_LEVEL = 100
 
 
 if U_LEVEL == 10:
-    U_DIR       = Path(r"F:\data\IFS_U10_daily")
+    U_DIR       = Path(r"path/to/your/data/IFS_U10_daily")
     U_FILE_TMPL = "SEAS5_u10hPa_NH_{year}11_system51_m25_daily.nc"
     U_LABEL     = "U10hPa"
 elif U_LEVEL == 100:
-    U_DIR       = Path(r"F:\data\IFS_U100_daily")
+    U_DIR       = Path(r"path/to/your/data/IFS_U100_daily")
     U_FILE_TMPL = "SEAS5_u100hPa_NH_{year}11_system51_m25_daily.nc"
     U_LABEL     = "U100hPa"
 else:
@@ -404,7 +404,7 @@ def build_baseline(all_data):
     doy_to_fields = {}
 
     # ----------------------------
-    # Step 1: collect baseline
+    # collect baseline
     # ----------------------------
     for year in range(BASELINE_START, BASELINE_END + 1):
 
@@ -426,7 +426,7 @@ def build_baseline(all_data):
         gc.collect()
 
     # ----------------------------
-    # Step 2: raw climatology
+    # raw climatology
     # ----------------------------
     sample = next(iter(doy_to_fields.values()))[0]
     nlat, nlon = sample.shape
@@ -442,7 +442,7 @@ def build_baseline(all_data):
     gc.collect()
 
     # ----------------------------
-    # Step 3: rolling smoothing ✅
+    # rolling smoothing 
     # ----------------------------
     window = 11
     pad = window // 2
@@ -466,7 +466,7 @@ def build_baseline(all_data):
     gc.collect()
 
     # ----------------------------
-    # Step 4: map to month-day ✅
+    # map to month-day 
     # ----------------------------
     baseline_clim = {}
 
@@ -542,7 +542,7 @@ def compute_trend_slopes(all_data, baseline_clim):
 
 
 # ================================================================
-# TREND SLOPES — U100 60°N  ← 新增
+# TREND SLOPES — U100 60°N 
 # ================================================================
 def compute_u_trend_slopes(u_data_all, baseline_u):
     print(f"Computing {U_LABEL} trend slopes at 60N ...")
@@ -771,7 +771,7 @@ def build_u_baseline(u_data_all):
     doy_to_fields = {}
 
     # ----------------------------
-    # Step 1: collect baseline
+    # collect baseline
     # ----------------------------
     for year in range(BASELINE_START, BASELINE_END + 1):
 
@@ -792,7 +792,7 @@ def build_u_baseline(u_data_all):
         gc.collect()
 
     # ----------------------------
-    # Step 2: raw climatology
+    # raw climatology
     # ----------------------------
     sample = next(iter(doy_to_fields.values()))[0]
     nlat, nlon = sample.shape
@@ -808,7 +808,7 @@ def build_u_baseline(u_data_all):
     gc.collect()
 
     # ----------------------------
-    # Step 3: rolling smoothing ✅
+    # rolling smoothing
     # ----------------------------
     window = 11
     pad = window // 2
@@ -832,7 +832,7 @@ def build_u_baseline(u_data_all):
     gc.collect()
 
     # ----------------------------
-    # Step 4: map to month-day ✅
+    # map to month-day 
     # ----------------------------
     baseline_u = {}
 
@@ -848,7 +848,7 @@ def build_u_baseline(u_data_all):
 
 
 # ================================================================
-# EXTRACT U STRENGTH — 同时输出 raw 和 detrended  ← 修改
+# EXTRACT U STRENGTH — 同时输出 raw 和 detrended  
 # ================================================================
 def extract_u_strength(u_data_all, baseline_u, u_trend_slopes):
     print(f"Extracting {U_LABEL} anomaly averaged over day {U_DAY_START} to +{U_DAY_END} ...")
