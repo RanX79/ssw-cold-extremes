@@ -1,1723 +1,1180 @@
 # -*- coding: utf-8 -*-
 """
-Reproduce Figure 4: post-SSW cold-anomaly area in SEAS5.
+SSW Post-event Cumulative Cold-Anomaly Area — Raw vs Detrended
+10-year sliding window
 
-For days 15-59 after each SSW onset, the script calculates the
-cosine-latitude-weighted regional area where daily 2-m temperature
-anomalies are below the baseline 10th-percentile anomaly threshold.
-It compares SSW events with matched-date non-SSW member-year analogs
-in overlapping 10-year windows.
+Metric:
+    For each day during day +15 to +59:
+        calculate area fraction within each region where
+        Tanom < baseline 10th percentil
+    Then sum daily area fraction over day +15 to +59.
+Unit: % area × day
 
-Raw SEAS5 data are not distributed with this repository. Update
-SSW_CSV_PATH and T2M_DAILY_DIR before running.
-
-Output:
-    - NPZ cache with sliding-window statistics
-    - Figure 4 PDF in OUTPUT_DIR
-
-Run:
-    python scripts/06_figure4_cumulative_cold_anomaly_area.py
+Raw: raw_anom = T - baseline_climatology
+Detrended: det = detrended anomaly from compute_detrended_year()
 """
 
 import gc
-from pathlib import Path
-
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import xarray as xr
+import pandas as pd
+import matplotlib.pyplot as plt
+from pathlib import Path
 from scipy.stats import theilslopes
-
+import matplotlib.patches as mpatches
 plt.rcParams["font.family"] = "Arial"
 
 # ================================================================
-# SETTINGS
+# settings
 # ================================================================
-SEAS5_SSW_CSV_PATH = Path(
-    "path/to/analysis_results/"
-    "SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv"
-)
+SSW_CSV_PATH  = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+# SSW_CSV_PATH = Path(r"F:\data\IFS_daily\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_biascorrected_1981_2024.csv")
 
-T2M_DAILY_DIR = Path("path/to/SEAS5/t2m_daily")
-
-OUTPUT_DIR = Path("outputs")
+T2M_DAILY_DIR = Path(r"F:\data\IFS_t2m_daily")
+OUTPUT_DIR    = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-START_YEAR = 1981
-END_YEAR = 2024
-N_MEMBERS = 25
+START_YEAR     = 1981
+END_YEAR       = 2024
+N_MEMBERS      = 25
 
-DAY_START = 15
-DAY_END = 59
-N_DAYS = DAY_END - DAY_START + 1
+DAY_START      = 8
+DAY_END        = 52
+N_DAYS         = DAY_END - DAY_START + 1
 SLIDING_WINDOW = 10
 
 BASELINE_START = 1981
-BASELINE_END = 2010
+BASELINE_END   = 2010
 
 PERCENTILE_THRESHOLD = 10.0
 
-T2M_VAR_CANDIDATES = (
-    "t2m",
-    "2t",
-    "2m_temperature",
-    "t2m_daily",
-)
+T2M_VAR_CANDIDATES = ["t2m", "2t", "2m_temperature", "t2m_daily"]
 
+# REGION_BOXES = {
+#     "NorthAmerica": {"lat_min": 35, "lat_max": 50, "lon_min": -95, "lon_max": -65},
+#     "Europe":       {"lat_min": 45, "lat_max": 60, "lon_min": 0,   "lon_max": 40},
+#     "EastAsia":     {"lat_min": 35, "lat_max": 45, "lon_min": 110, "lon_max": 130},
+# }
+# REGION_LABELS = {
+#     "NorthAmerica": "N. America (35-50°N, 95-65°W)",
+#     "Europe":       "Europe (45-60°N, 0-40°E)",
+#     "EastAsia":     "East Asia (35-45°N, 110-130°E)",
+# }
+# REGION_BOXES = {
+#     "NorthAmerica": {"lat_min": 45, "lat_max": 70, "lon_min": -140, "lon_max": -60},
+#     "Europe":       {"lat_min": 45, "lat_max": 70, "lon_min": 0,    "lon_max": 40},
+#     "EastAsia":      {"lat_min": 45, "lat_max": 70, "lon_min": 60,   "lon_max": 120},
+# }
 REGION_BOXES = {
-    "NorthAmerica": {
-        "lat_min": 45,
-        "lat_max": 70,
-        "lon_min": -140,
-        "lon_max": -60,
-    },
-    "Europe": {
-        "lat_min": 45,
-        "lat_max": 70,
-        "lon_min": 0,
-        "lon_max": 40,
-    },
-    "EastAsia": {
-        "lat_min": 45,
-        "lat_max": 70,
-        "lon_min": 60,
-        "lon_max": 120,
-    },
+    "NorthAmerica": {"lat_min": 30, "lat_max": 47.5, "lon_min": -100, "lon_max": -60},
+    "Europe":       {"lat_min": 45, "lat_max": 70, "lon_min": 0,    "lon_max": 40},
+    "EastAsia":      {"lat_min": 45, "lat_max": 70, "lon_min": 60,   "lon_max": 120},
 }
-
+# REGION_LABELS = {
+#     "NorthAmerica": "N. America (45-70°N, 140-60°W)",
+#     "Europe":       "Europe (45-70°N, 0-40°E)",
+#     "EastAsia":     "East Asia (45-70°N, 60-120°E)",
+# }
 REGION_LABELS = {
     "NorthAmerica": "North America",
-    "Europe": "Europe",
-    "EastAsia": "East Asia",
+    "Europe":       "Europe",
+    "EastAsia":     "East Asia",
 }
 
 REGION_COLORS = {
     "NorthAmerica": "#874F8D",
-    "Europe": "#1C6AB1",
-    "EastAsia": "#ED4043",
+    "Europe":       "#1C6AB1",
+    "EastAsia":     "#ED4043",
 }
+REGION_ORDER = ["NorthAmerica", "Europe", "EastAsia"]
 
-REGION_ORDER = (
-    "NorthAmerica",
-    "Europe",
-    "EastAsia",
-)
 
+# It is necessary to use 'npz' when adding 'high'. 
+# This is because the initial selected latitude was relatively low, 
+# and 'high' corresponds to generating data for high-latitude regions.
 NPZ_PATH = OUTPUT_DIR / (
     f"fig4_SSW_cumColdArea_TanomP{int(PERCENTILE_THRESHOLD)}"
     f"_day{DAY_START}to{DAY_END}"
     f"_mem{N_MEMBERS}_{START_YEAR}_{END_YEAR}"
     f"_sliding{SLIDING_WINDOW}"
-    f"_NDJFM_daily_{BASELINE_END}.npz"
+    f"_NDJFM_daily_{BASELINE_END}_NewNA.npz"
 )
 
-PDF_PATH = OUTPUT_DIR / (
-    f"fig4_SEAS5_SSW_cumColdArea_TanomP{int(PERCENTILE_THRESHOLD)}"
-    f"_10yrsliding_NDJFM_daily_{BASELINE_END}.pdf"
-)
-
+PNG_PATH = str(OUTPUT_DIR / (
+    f"fig4_SEAS5_SSW_cumColdArea_day{DAY_START}to{DAY_END}_TanomP{int(PERCENTILE_THRESHOLD)}"
+    f"_10yrsliding_NDJFM_daily_{BASELINE_END}_NewNA.pdf"
+))
 
 # ================================================================
-# BASIC TOOLS
+# basic tools
 # ================================================================
 def get_var_name(ds):
-    """Identify the 2-m temperature variable."""
-    for variable_name in T2M_VAR_CANDIDATES:
-        if variable_name in ds.data_vars:
-            return variable_name
-
+    for v in T2M_VAR_CANDIDATES:
+        if v in ds.data_vars:
+            return v
     if len(ds.data_vars) == 1:
         return list(ds.data_vars)[0]
-
-    raise ValueError(
-        f"Cannot identify T2m variable: {list(ds.data_vars)}"
-    )
+    raise ValueError(f"Cannot identify T2m variable: {list(ds.data_vars)}")
 
 
 def get_lat_lon_dims(da):
-    """Return latitude and longitude dimension names."""
-    lat_candidates = [
-        dimension
-        for dimension in da.dims
-        if "lat" in dimension.lower()
-    ]
-    lon_candidates = [
-        dimension
-        for dimension in da.dims
-        if "lon" in dimension.lower()
-    ]
-
-    if not lat_candidates:
-        raise ValueError(f"No latitude dimension: {da.dims}")
-
-    if not lon_candidates:
-        raise ValueError(f"No longitude dimension: {da.dims}")
-
-    return lat_candidates[0], lon_candidates[0]
+    lat = next(d for d in da.dims if "lat" in d.lower())
+    lon = next(d for d in da.dims if "lon" in d.lower())
+    return lat, lon
 
 
 def get_time_dim(da):
-    """Return the time dimension name."""
-    for name in ("valid_time", "time", "forecast_period"):
-        if name in da.dims:
-            return name
-
-    raise ValueError(f"No time dimension: {da.dims}")
+    for n in ["valid_time", "time"]:
+        if n in da.dims:
+            return n
+    raise ValueError(f"No time dim: dims={da.dims}")
 
 
-def month_day_key(timestamp):
-    """Return a calendar date key in MM-DD format."""
-    timestamp = pd.Timestamp(timestamp)
-    return f"{timestamp.month:02d}-{timestamp.day:02d}"
+def month_day_key(ts):
+    ts = pd.Timestamp(ts)
+    return f"{ts.month:02d}-{ts.day:02d}"
 
 
 def get_daily_filepath(year):
-    """Return the expected SEAS5 daily T2m file path."""
-    return T2M_DAILY_DIR / (
-        f"SEAS5_2mt_NH_{year}11_system51_m25_daily.nc"
-    )
+    return T2M_DAILY_DIR / f"SEAS5_2mt_NH_{year}11_system51_m25_daily.nc"
 
 
 def read_year_data(year):
     """
-    Read one daily SEAS5 T2m file.
-
-    Returns
-    -------
-    arr : ndarray
-        Shape: (member, time, latitude, longitude).
-    times : DatetimeIndex
-    members : list[int]
-    lat_values : ndarray
-    lon_values : ndarray
+    Read one yearly daily file.
+    Return:
+        arr shape = (N_MEMBERS, n_days, nlat, nlon), float32
+        times, members, lat_vals, lon_vals
     """
-    input_file = get_daily_filepath(year)
+    fp = get_daily_filepath(year)
+    if not fp.exists():
+        raise FileNotFoundError(f"Missing: {fp}")
 
-    if not input_file.exists():
-        raise FileNotFoundError(f"Missing input file: {input_file}")
+    ds  = xr.open_dataset(fp)
+    var = get_var_name(ds)
+    da  = ds[var]
 
-    ds = xr.open_dataset(input_file)
+    for dim in list(da.dims):
+        if (
+            dim not in ("number",)
+            and da.sizes[dim] == 1
+            and "lat"   not in dim.lower()
+            and "lon"   not in dim.lower()
+            and "time"  not in dim.lower()
+            and "valid" not in dim.lower()
+        ):
+            da = da.squeeze(dim, drop=True)
 
-    try:
-        variable_name = get_var_name(ds)
-        da = ds[variable_name].load()
-    finally:
-        ds.close()
-
-    if "number" not in da.dims:
-        raise ValueError(
-            f"Ensemble-member dimension 'number' not found: {da.dims}"
-        )
-
-    for dimension in list(da.dims):
-        is_non_spatial_singleton = (
-            dimension != "number"
-            and da.sizes[dimension] == 1
-            and "lat" not in dimension.lower()
-            and "lon" not in dimension.lower()
-            and "time" not in dimension.lower()
-            and "valid" not in dimension.lower()
-        )
-
-        if is_non_spatial_singleton:
-            da = da.squeeze(dimension, drop=True)
-
-    da = da.transpose(
-        "number",
-        *[
-            dimension
-            for dimension in da.dims
-            if dimension != "number"
-        ],
-    )
-
+    da = da.transpose("number", *[d for d in da.dims if d != "number"])
     da = da.isel(number=slice(0, N_MEMBERS))
 
     lat_name, lon_name = get_lat_lon_dims(da)
-    time_name = get_time_dim(da)
+    time_name          = get_time_dim(da)
 
     if da[lat_name].values[0] < da[lat_name].values[-1]:
         da = da.isel({lat_name: slice(None, None, -1)})
 
-    original_lon = da[lon_name].values
+    lon0 = da[lon_name].values
+    if np.nanmax(lon0) > 180:
+        lon_new  = np.where(lon0 > 180, lon0 - 360, lon0)
+        sort_idx = np.argsort(lon_new)
+        da       = da.isel({lon_name: sort_idx})
+        da       = da.assign_coords({lon_name: lon_new[sort_idx]})
+        del lon_new, sort_idx
 
-    if np.nanmax(original_lon) > 180:
-        converted_lon = np.where(
-            original_lon > 180,
-            original_lon - 360,
-            original_lon,
-        )
-
-        sort_index = np.argsort(converted_lon)
-
-        da = da.isel({lon_name: sort_index})
-        da = da.assign_coords({lon_name: converted_lon[sort_index]})
-
-    lat_values = da[lat_name].values.copy()
-    lon_values = da[lon_name].values.copy()
-    times = pd.to_datetime(da[time_name].values).normalize()
-
-    members = []
-
-    for index in range(da.sizes["number"]):
-        try:
-            members.append(int(da["number"].values[index]))
-        except (TypeError, ValueError):
-            members.append(index + 1)
+    lat_vals = da[lat_name].values.copy()
+    lon_vals = da[lon_name].values.copy()
+    times    = pd.to_datetime(da[time_name].values).normalize()
+    members  = da["number"].values.astype(int).tolist()
 
     arr = da.values.astype(np.float32)
 
-    del da
+    ds.close()
+    del da, ds
     gc.collect()
 
-    return arr, times, members, lat_values, lon_values
+    return arr, times, members, lat_vals, lon_vals
 
 
 def scan_all_years():
     """
-    Scan available daily files and construct metadata for each year.
+    Return:
+        meta_u[year] = {
+            md,
+            member_to_idx,
+            time_to_idx,
+            lat_vals,
+            lon_vals,
+            n_times
+        }
     """
-    metadata = {}
+    meta_u = {}
 
     for year in range(START_YEAR, END_YEAR + 1):
-        input_file = get_daily_filepath(year)
-
-        if not input_file.exists():
-            print(f"  [WARNING] Missing file for {year}; skipped.")
+        fp = get_daily_filepath(year)
+        if not fp.exists():
+            print(f"  [WARN] Missing file for {year}, skip.")
             continue
 
         try:
-            arr, times, members, lat_values, lon_values = read_year_data(
-                year
-            )
-
-            metadata[year] = {
-                "lat_vals": lat_values,
-                "lon_vals": lon_values,
-                "md": [month_day_key(timestamp) for timestamp in times],
-                "member_to_idx": {
-                    member: index
-                    for index, member in enumerate(members)
-                },
-                "time_to_idx": {
-                    pd.Timestamp(timestamp): index
-                    for index, timestamp in enumerate(times)
-                },
-                "n_times": len(times),
+            arr, times, members, lat_vals, lon_vals = read_year_data(year)
+            meta_u[year] = {
+                "lat_vals":      lat_vals,
+                "lon_vals":      lon_vals,
+                "md":            [month_day_key(t) for t in times],
+                "member_to_idx": {m: i for i, m in enumerate(members)},
+                "time_to_idx":   {t: i for i, t in enumerate(times)},
+                "n_times":       len(times),
             }
-
-            print(f"  Metadata scanned: {year}; shape={arr.shape}")
-
-            del arr, times, members, lat_values, lon_values
+            print(f"  {year} meta scanned: shape {arr.shape}")
+            del arr, times, members, lat_vals, lon_vals
             gc.collect()
 
-        except Exception as error:
-            print(f"  [WARNING] Scan failed for {year}: {error}")
+        except Exception as e:
+            print(f"  [WARN] Scan failed {year}: {e}")
             gc.collect()
 
-    if not metadata:
-        raise RuntimeError(
-            "No SEAS5 daily files were found. Check T2M_DAILY_DIR."
-        )
-
-    return metadata
+    return meta_u
 
 
-def cosine_weights_2d(lat_values, lon_values, region_box):
-    """Create masks and cosine-latitude weights for a region."""
-    lat_mask = (
-        (lat_values >= region_box["lat_min"])
-        & (lat_values <= region_box["lat_max"])
-    )
-
-    lon_mask = (
-        (lon_values >= region_box["lon_min"])
-        & (lon_values <= region_box["lon_max"])
-    )
-
-    if not np.any(lat_mask) or not np.any(lon_mask):
-        raise ValueError(
-            f"Region does not overlap data grid: {region_box}"
-        )
-
-    weights_2d = (
-        np.cos(np.deg2rad(lat_values[lat_mask]))[:, None]
-        * np.ones(lon_mask.sum())
-    )
-
-    return lat_mask, lon_mask, weights_2d
+def cosine_weights_2d(lat_vals, lon_vals, rb):
+    lat_mask = (lat_vals >= rb["lat_min"]) & (lat_vals <= rb["lat_max"])
+    lon_mask = (lon_vals >= rb["lon_min"]) & (lon_vals <= rb["lon_max"])
+    w2d = np.cos(np.deg2rad(lat_vals[lat_mask]))[:, None] * np.ones(lon_mask.sum())
+    return lat_mask, lon_mask, w2d
 
 
-def region_area_fraction_below_threshold(
-    field_2d,
-    threshold_2d,
-    lat_mask,
-    lon_mask,
-    weights_2d,
-):
+def region_area_fraction_below_threshold(field2d, threshold2d,
+                                         lat_mask, lon_mask, w2d):
     """
-    Return cosine-weighted area fraction where field < threshold.
+    Calculate area fraction within region where field2d < threshold2d.
+
+    Return:
+        fraction in [0, 1]
     """
-    lat_index = np.where(lat_mask)[0]
-    lon_index = np.where(lon_mask)[0]
+    lat_idx = np.where(lat_mask)[0]
+    lon_idx = np.where(lon_mask)[0]
 
-    subset = field_2d[np.ix_(lat_index, lon_index)]
-    threshold_subset = threshold_2d[np.ix_(lat_index, lon_index)]
+    sub = field2d[np.ix_(lat_idx, lon_idx)]
+    thr = threshold2d[np.ix_(lat_idx, lon_idx)]
 
-    valid = np.isfinite(subset) & np.isfinite(threshold_subset)
-    cold = (subset < threshold_subset) & valid
+    valid = np.isfinite(sub) & np.isfinite(thr)
+    cold  = (sub < thr) & valid
 
-    total_weight = np.sum(valid * weights_2d)
-
-    if total_weight == 0:
+    total = (valid * w2d).sum()
+    if total == 0:
         return np.nan
 
-    return float(np.sum(cold * weights_2d) / total_weight)
+    return float((cold * w2d).sum() / total)
 
 
 def read_ssw_events():
-    """Read retained NDJFM SEAS5 SSW events."""
-    if not SEAS5_SSW_CSV_PATH.exists():
-        raise FileNotFoundError(
-            f"SSW-event CSV was not found:\n"
-            f"  {SEAS5_SSW_CSV_PATH}\n\n"
-            "Run 02_seas5_ssw_dates.py first or update "
-            "SEAS5_SSW_CSV_PATH."
-        )
+    df = pd.read_csv(SSW_CSV_PATH)
+    df["ssw_date"] = pd.to_datetime(df["ssw_date"], errors="coerce").dt.normalize()
+    df = df.dropna(subset=["ssw_date"])
 
-    df = pd.read_csv(SEAS5_SSW_CSV_PATH)
-
-    required_columns = ("init_year", "member", "ssw_date")
-
-    for column in required_columns:
-        if column not in df.columns:
-            raise ValueError(
-                f"SSW-event CSV missing required column: {column}"
-            )
-
-    df["ssw_date"] = pd.to_datetime(
-        df["ssw_date"],
-        errors="coerce",
-    ).dt.normalize()
-
-    df = df.dropna(subset=["ssw_date"]).copy()
-
-    df = df[
-        (df["init_year"] >= START_YEAR)
-        & (df["init_year"] <= END_YEAR)
-    ].copy()
-
+    df = df[(df["init_year"] >= START_YEAR) & (df["init_year"] <= END_YEAR)].copy()
     df["member"] = df["member"].astype(int)
+    df = df[df["member"] < N_MEMBERS]
+
     df["month"] = df["ssw_date"].dt.month
-
-    df = df[
-        df["month"].isin((11, 12, 1, 2, 3))
-    ].copy()
-
-    df = df.sort_values(
-        ["init_year", "member", "ssw_date"]
-    ).reset_index(drop=True)
-
-    if df.empty:
-        raise RuntimeError("No valid NDJFM SSW events were found.")
+    df = df[df["month"].isin([11, 12, 1, 2, 3])].copy()
 
     print(f"Loaded {len(df)} SSW events (NDJFM).")
-
     return df
 
 
 # ================================================================
-# BASELINE CLIMATOLOGY
+# baseline climatology
 # ================================================================
-def build_baseline_climatology(metadata):
+def build_baseline_climatology(meta_u):
     """
-    Build a smoothed baseline daily climatology from ensemble means.
-
-    The climatology uses baseline years BASELINE_START-BASELINE_END
-    and applies circular +/-5-day smoothing.
+    Build smoothed baseline climatology using ensemble mean.
+    Same logic as your original code:
+        baseline years = BASELINE_START-BASELINE_END
+        daily climatology smoothed by ±5 days
     """
-    print(
-        f"Building baseline climatology "
-        f"({BASELINE_START}-{BASELINE_END}; +/-5 days)"
-    )
+    print(f"Building rolling climatology ({BASELINE_START}-{BASELINE_END}, ±5 days)...")
 
-    day_of_year_fields = {}
+    doy_to_fields = {}
 
     for year in range(BASELINE_START, BASELINE_END + 1):
-        if year not in metadata:
+        if year not in meta_u:
             continue
 
         arr, times, _, _, _ = read_year_data(year)
-
-        ensemble_mean = arr.mean(axis=0)
-        day_of_years = pd.to_datetime(times).dayofyear.values
-
-        for index, day_of_year in enumerate(day_of_years):
-            day_of_year_fields.setdefault(day_of_year, []).append(
-                ensemble_mean[index].astype(np.float32)
-            )
-
-        del arr, times, ensemble_mean, day_of_years
+        ens_mean = arr.mean(axis=0)   # (T, lat, lon)
+        del arr
         gc.collect()
 
-    if not day_of_year_fields:
-        raise RuntimeError(
-            "No baseline data were available to construct climatology."
-        )
+        doys = pd.to_datetime(times).dayofyear.values
 
-    sample = next(iter(day_of_year_fields.values()))[0]
-    n_lat, n_lon = sample.shape
+        for i, doy in enumerate(doys):
+            doy_to_fields.setdefault(doy, []).append(
+                ens_mean[i].astype(np.float32)
+            )
 
-    climatology_raw = np.full(
-        (366, n_lat, n_lon),
-        np.nan,
-        dtype=np.float32,
-    )
+        del ens_mean, times
+        gc.collect()
 
-    for day_of_year, fields in day_of_year_fields.items():
-        climatology_raw[day_of_year - 1] = np.nanmean(
-            np.stack(fields, axis=0),
-            axis=0,
-        )
+    sample = next(iter(doy_to_fields.values()))[0]
+    nlat, nlon = sample.shape
 
-    del day_of_year_fields
+    clim_raw = np.full((366, nlat, nlon), np.nan, dtype=np.float32)
+
+    for doy, fields in doy_to_fields.items():
+        clim_raw[doy - 1] = np.nanmean(np.stack(fields, axis=0), axis=0)
+
+    del doy_to_fields
     gc.collect()
 
     window = 11
-    padding = window // 2
+    pad = window // 2
 
-    climatology_padded = np.concatenate(
-        [
-            climatology_raw[-padding:],
-            climatology_raw,
-            climatology_raw[:padding],
-        ],
-        axis=0,
-    )
+    clim_pad = np.concatenate([clim_raw[-pad:], clim_raw, clim_raw[:pad]], axis=0)
+    clim_smooth = np.full_like(clim_raw, np.nan)
 
-    climatology_smoothed = np.full_like(
-        climatology_raw,
-        np.nan,
-    )
+    for i in range(366):
+        win = clim_pad[i:i + window]
+        if not np.isfinite(win).any():
+            continue
+        clim_smooth[i] = np.nanmean(win, axis=0)
 
-    for index in range(366):
-        values = climatology_padded[index:index + window]
-
-        if np.isfinite(values).any():
-            climatology_smoothed[index] = np.nanmean(
-                values,
-                axis=0,
-            )
-
-    del climatology_padded, climatology_raw
+    del clim_pad, clim_raw
     gc.collect()
 
-    baseline_climatology = {}
+    baseline_clim = {}
+    for t in pd.date_range("2001-01-01", "2001-12-31"):
+        key = month_day_key(t)
+        baseline_clim[key] = clim_smooth[t.dayofyear - 1]
 
-    for timestamp in pd.date_range("2001-01-01", "2001-12-31"):
-        baseline_climatology[month_day_key(timestamp)] = (
-            climatology_smoothed[timestamp.dayofyear - 1]
-        )
-
-    del climatology_smoothed
+    del clim_smooth
     gc.collect()
 
+    print(f"  Done: {len(baseline_clim)} keys (smoothed)")
+    return baseline_clim
+
+
+def build_baseline_p10_threshold(meta_u, baseline_clim):
+    """
+    Build baseline 10th percentile threshold for Tanom.
+
+    Important:
+        This threshold is based on raw anomaly:
+            Tanom = T - baseline_clim
+
+        For memory safety, this function loops over each target calendar day
+        and reads baseline-year files only as needed.
+
+    Threshold:
+        for each calendar day, use ±5-day window from all baseline years
+        and all ensemble members.
+
+    Return:
+        baseline_p10[month-day] = 2D threshold field, same shape as T2m.
+    """
     print(
-        f"  Baseline climatology complete: "
-        f"{len(baseline_climatology)} calendar days"
+        f"Building baseline P{PERCENTILE_THRESHOLD:.0f} threshold for Tanom "
+        f"({BASELINE_START}-{BASELINE_END}, ±5 days, all members)..."
     )
 
-    return baseline_climatology
+    baseline_years = [y for y in range(BASELINE_START, BASELINE_END + 1) if y in meta_u]
 
+    # If memory is not enough, set USE_BASELINE_CACHE = False.
+    USE_BASELINE_CACHE = True
 
-# ================================================================
-# BASELINE P10 THRESHOLD
-# ================================================================
-def build_baseline_p10_threshold(metadata, baseline_climatology):
-    """
-    Build the daily baseline P10 threshold for raw T2m anomalies.
-
-    For each target calendar day, the threshold is calculated from all
-    baseline years, all ensemble members, and a +/-5-day calendar window.
-
-    The threshold is based on:
-        raw anomaly = T2m - baseline climatology
-    """
-    print(
-        f"Building baseline P{PERCENTILE_THRESHOLD:.0f} thresholds "
-        f"({BASELINE_START}-{BASELINE_END}; +/-5 days; all members)"
-    )
-
-    baseline_years = [
-        year
-        for year in range(BASELINE_START, BASELINE_END + 1)
-        if year in metadata
-    ]
-
-    if not baseline_years:
-        raise RuntimeError("No baseline years are available.")
-
-    # Set to False if memory is insufficient.
-    use_baseline_cache = True
     baseline_data = {}
-
-    if use_baseline_cache:
-        for year in baseline_years:
+    if USE_BASELINE_CACHE:
+        for y in baseline_years:
             try:
-                arr, _, _, _, _ = read_year_data(year)
-                baseline_data[year] = arr
-                print(f"  Cached baseline year {year}: {arr.shape}")
-            except Exception as error:
-                print(
-                    f"  [WARNING] Failed to cache baseline year "
-                    f"{year}: {error}"
-                )
-
+                arr, _, _, _, _ = read_year_data(y)
+                baseline_data[y] = arr
+                print(f"  Cached baseline year {y}: {arr.shape}")
+            except Exception as e:
+                print(f"  [WARN] baseline cache failed {y}: {e}")
             gc.collect()
 
     baseline_p10 = {}
 
     target_dates = pd.date_range("2001-01-01", "2001-12-31")
 
-    for target_date in target_dates:
-        key = month_day_key(target_date)
-        anomaly_fields = []
+    for target in target_dates:
+        key = month_day_key(target)
+        fields = []
 
-        target_window = {
-            (
-                (target_date + pd.Timedelta(days=offset)).month,
-                (target_date + pd.Timedelta(days=offset)).day,
-            )
-            for offset in range(-5, 6)
-        }
+        window_mds = set()
+        for dd in range(-5, 6):
+            t = target + pd.Timedelta(days=dd)
+            window_mds.add((t.month, t.day))
 
-        for year in baseline_years:
-            if use_baseline_cache:
-                if year not in baseline_data:
+        for y in baseline_years:
+            if USE_BASELINE_CACHE:
+                if y not in baseline_data:
                     continue
-
-                arr = baseline_data[year]
-
+                arr = baseline_data[y]
             else:
                 try:
-                    arr, _, _, _, _ = read_year_data(year)
-                except Exception as error:
-                    print(
-                        f"  [WARNING] Failed to read baseline year "
-                        f"{year}: {error}"
-                    )
+                    arr, _, _, _, _ = read_year_data(y)
+                except Exception as e:
+                    print(f"  [WARN] read baseline {y}: {e}")
                     continue
 
-            year_metadata = metadata[year]
+            info = meta_u[y]
 
-            matched_indices = [
-                index
-                for date, index in year_metadata["time_to_idx"].items()
-                if (date.month, date.day) in target_window
+            matched = [
+                idx for date, idx in info["time_to_idx"].items()
+                if (date.month, date.day) in window_mds
             ]
 
-            for time_index in matched_indices:
-                monthday = year_metadata["md"][time_index]
-
-                climatology_field = baseline_climatology.get(monthday)
-
-                if climatology_field is None:
+            for tidx in matched:
+                md_key = info["md"][tidx]
+                c_field = baseline_clim.get(md_key)
+                if c_field is None:
                     continue
 
-                anomalies = (
-                    arr[:, time_index]
-                    - climatology_field[None, :, :]
-                )
+                # all members, anomaly
+                anom = arr[:, tidx] - c_field[None, :, :]
+                fields.append(anom.astype(np.float32))
 
-                anomaly_fields.append(anomalies.astype(np.float32))
+                del anom
 
-                del anomalies
-
-            if not use_baseline_cache:
+            if not USE_BASELINE_CACHE:
                 del arr
                 gc.collect()
 
-        if not anomaly_fields:
+        if len(fields) == 0:
             baseline_p10[key] = None
-            print(f"  [WARNING] No data available for P10: {key}")
+            print(f"  [WARN] no fields for P10 {key}")
             continue
 
-        values = np.concatenate(anomaly_fields, axis=0).astype(
-            np.float32
-        )
-
+        vals = np.concatenate(fields, axis=0).astype(np.float32)
         baseline_p10[key] = np.nanpercentile(
-            values,
-            PERCENTILE_THRESHOLD,
-            axis=0,
+            vals, PERCENTILE_THRESHOLD, axis=0
         ).astype(np.float32)
 
-        del values, anomaly_fields
+        del vals, fields
         gc.collect()
 
-        if target_date.day == 1:
-            print(
-                f"  P{PERCENTILE_THRESHOLD:.0f} threshold "
-                f"completed through {key}"
-            )
+        if target.day == 1:
+            print(f"  P{PERCENTILE_THRESHOLD:.0f} threshold done to {key}")
 
-    if use_baseline_cache:
+    if USE_BASELINE_CACHE:
         del baseline_data
         gc.collect()
 
-    print(
-        f"  P{PERCENTILE_THRESHOLD:.0f} threshold complete: "
-        f"{len(baseline_p10)} fields"
-    )
-
+    print(f"  Done: {len(baseline_p10)} P10 threshold fields")
     return baseline_p10
 
 
 # ================================================================
-# LINEAR TREND COEFFICIENTS
+# trend coefficients
 # ================================================================
-def build_trend_coefficients(metadata, baseline_climatology):
+def build_slope_and_intercept(meta_u, baseline_clim):
     """
-    Build daily linear trend coefficients from ensemble-mean anomalies.
-
-    Returns a dictionary:
-        coeffs[monthday] = (intercept, slope, mean_year)
+    Build linear trend coefficients for ensemble-mean anomaly.
     """
-    print("Building cross-year linear trend coefficients")
+    print("Building trend coefficients...")
+    md_entries = {}
 
-    daily_entries = {}
-
-    for year in sorted(metadata.keys()):
+    for year in sorted(meta_u.keys()):
         arr, _, _, _, _ = read_year_data(year)
-
-        ensemble_mean = arr.mean(axis=0)
-
-        for time_index, monthday in enumerate(metadata[year]["md"]):
-            climatology_field = baseline_climatology.get(monthday)
-
-            if climatology_field is None:
-                continue
-
-            anomaly = (
-                ensemble_mean[time_index] - climatology_field
-            ).astype(np.float32)
-
-            daily_entries.setdefault(monthday, []).append(
-                (year, anomaly)
-            )
-
-            del anomaly
-
-        del arr, ensemble_mean
+        ens_mean = arr.mean(axis=0)
+        del arr
         gc.collect()
 
-        print(f"  Trend accumulation complete: {year}")
+        for i, key in enumerate(meta_u[year]["md"]):
+            cf = baseline_clim.get(key)
+            if cf is None:
+                continue
 
-    coefficients = {}
+            anom = ens_mean[i] - cf
+            md_entries.setdefault(key, []).append((year, anom.astype(np.float32)))
+            del anom
 
-    for monthday, entries in daily_entries.items():
+        del ens_mean
+        gc.collect()
+        print(f"  Trend accumulate {year}")
+
+    coeffs = {}
+
+    for key, entries in md_entries.items():
         if len(entries) < 2:
             continue
 
-        years = np.array(
-            [entry[0] for entry in entries],
-            dtype=np.float64,
-        )
+        yrs  = np.array([e[0] for e in entries], dtype=np.float64)
+        vals = np.stack([e[1] for e in entries]).astype(np.float64)
 
-        values = np.stack(
-            [entry[1] for entry in entries],
-            axis=0,
-        ).astype(np.float64)
+        yc = yrs - yrs.mean()
+        denom = (yc ** 2).sum()
 
-        mean_year = float(years.mean())
-        centered_years = years - mean_year
-        denominator = np.sum(centered_years ** 2)
-
-        if denominator == 0:
-            del years, values, centered_years
+        if denom == 0:
+            del yrs, vals, yc
             continue
 
-        slope = (
-            centered_years[:, None, None] * values
-        ).sum(axis=0) / denominator
+        b = (yc[:, None, None] * vals).sum(axis=0) / denom
+        a = np.nanmean(vals, axis=0)
 
-        intercept = np.nanmean(values, axis=0)
-
-        coefficients[monthday] = (
-            intercept.astype(np.float32),
-            slope.astype(np.float32),
-            mean_year,
+        coeffs[key] = (
+            a.astype(np.float32),
+            b.astype(np.float32),
+            float(yrs.mean())
         )
 
-        del years, values, centered_years, slope, intercept
+        del yrs, vals, yc, b, a
 
-    del daily_entries
+    del md_entries
     gc.collect()
 
-    print(
-        f"  Trend coefficients complete: "
-        f"{len(coefficients)} calendar days"
-    )
-
-    return coefficients
+    print(f"  Done: {len(coeffs)} calendar days")
+    return coeffs
 
 
-def compute_detrended_year(
-    year,
-    metadata,
-    baseline_climatology,
-    coefficients,
-):
+def compute_detrended_year(year, meta_u, baseline_clim, coeffs):
     """
-    Load one year and calculate linearly detrended daily T2m anomalies.
-
-    Detrending removes only the time-varying trend component:
-        anomaly - slope * (year - mean_year)
-
-    This preserves the anomaly reference level used by the raw-anomaly
-    P10 cold threshold.
+    Return:
+        arr: original absolute T2m, shape (member, time, lat, lon)
+        det: detrended Tanom, shape (member, time, lat, lon)
     """
     arr, _, _, _, _ = read_year_data(year)
-    detrended = np.empty_like(arr)
+    det = np.empty_like(arr)
 
-    for time_index, monthday in enumerate(metadata[year]["md"]):
-        climatology_field = baseline_climatology.get(monthday)
-
-        if climatology_field is None:
-            detrended[:, time_index] = np.nan
+    for tidx, key in enumerate(meta_u[year]["md"]):
+        c_field = baseline_clim.get(key)
+        if c_field is None:
+            det[:, tidx] = np.nan
             continue
 
-        anomalies = (
-            arr[:, time_index]
-            - climatology_field[None, :, :]
-        )
+        anom = arr[:, tidx] - c_field[None, :, :]
 
-        if monthday in coefficients:
-            _, slope, mean_year = coefficients[monthday]
+        if key in coeffs:
+            a, b, yr_mean = coeffs[key]
 
-            detrended[:, time_index] = (
-                anomalies
-                - slope[None, :, :] * (year - mean_year)
-            )
+            # # Keep your uploaded-code detrending:
+            det[:, tidx] = anom - (a[None, :, :] + b[None, :, :] * (year - yr_mean))
+
+            # Alternative: remove only slope, retain mean anomaly:
+            # det[:, tidx] = anom - b[None, :, :] * (year - yr_mean)
 
         else:
-            detrended[:, time_index] = anomalies
+            det[:, tidx] = anom
 
-        del anomalies
+        del anom
 
-    return arr, detrended
+    return arr, det
 
 
 # ================================================================
-# EVENT METRICS
+# event metric
 # ================================================================
-def build_event_cache(
-    ssw_df,
-    metadata,
-    baseline_climatology,
-    baseline_p10,
-    coefficients,
-):
+def build_event_cache(ssw_df, meta_u, baseline_clim, baseline_p10, coeffs):
     """
-    Calculate cumulative post-SSW cold-anomaly area for each event.
+    For each SSW event and each region:
 
-    For days DAY_START to DAY_END:
-        - raw metric uses raw T2m anomaly
-        - detrended metric uses linearly detrended T2m anomaly
-        - both are judged against baseline raw-anomaly P10 threshold
+        raw_sum = sum over day15-59 of:
+            100 * area_fraction(raw_anom < baseline_p10)
+
+        det_sum = sum over day15-59 of:
+            100 * area_fraction(det_anom < baseline_p10)
 
     Unit:
-        percent area multiplied by days
+        % area × day
     """
-    print("Building post-SSW event cache")
-
-    first_year = sorted(metadata.keys())[0]
-
-    region_weights = {
-        region_name: cosine_weights_2d(
-            metadata[first_year]["lat_vals"],
-            metadata[first_year]["lon_vals"],
-            region_box,
-        )
-        for region_name, region_box in REGION_BOXES.items()
-    }
-
+    print("Building event cache...")
+    region_weights  = {}
     event_cache_raw = {}
-    event_cache_detrended = {}
+    event_cache_det = {}
 
-    for year in sorted(metadata.keys()):
-        events_this_year = ssw_df[
-            ssw_df["init_year"] == year
-        ]
+    first_year = sorted(meta_u.keys())[0]
 
-        if events_this_year.empty:
+    for rn, rb in REGION_BOXES.items():
+        region_weights[rn] = cosine_weights_2d(
+            meta_u[first_year]["lat_vals"],
+            meta_u[first_year]["lon_vals"],
+            rb
+        )
+
+    for year in sorted(meta_u.keys()):
+        dfp = ssw_df[ssw_df["init_year"] == year]
+        if dfp.empty:
             continue
 
-        arr, detrended = compute_detrended_year(
-            year,
-            metadata,
-            baseline_climatology,
-            coefficients,
-        )
+        arr, det = compute_detrended_year(year, meta_u, baseline_clim, coeffs)
+        info = meta_u[year]
 
-        year_metadata = metadata[year]
-
-        for _, row in events_this_year.iterrows():
+        for _, row in dfp.iterrows():
             member = int(row["member"])
-            onset_date = pd.Timestamp(row["ssw_date"]).normalize()
+            center = pd.Timestamp(row["ssw_date"]).normalize()
 
-            if member not in year_metadata["member_to_idx"]:
+            if member not in info["member_to_idx"]:
+                continue
+            if center not in info["time_to_idx"]:
                 continue
 
-            if onset_date not in year_metadata["time_to_idx"]:
+            mi = info["member_to_idx"][member]
+            ci = info["time_to_idx"][center]
+
+            i0 = ci + DAY_START
+            i1 = ci + DAY_END + 1
+
+            if i0 < 0 or i1 > arr.shape[1]:
+                print(f"  [SKIP] {year} mem={member} {center.date()} out of range")
                 continue
 
-            member_index = year_metadata["member_to_idx"][member]
-            onset_index = year_metadata["time_to_idx"][onset_date]
-
-            start_index = onset_index + DAY_START
-            end_index = onset_index + DAY_END + 1
-
-            if start_index < 0 or end_index > arr.shape[1]:
-                print(
-                    f"  [SKIP] {year}; member={member}; "
-                    f"{onset_date.date()}; out of range"
-                )
-                continue
-
-            for region_name in REGION_ORDER:
-                lat_mask, lon_mask, weights_2d = (
-                    region_weights[region_name]
-                )
+            for rn in REGION_ORDER:
+                lat_mask, lon_mask, w2d = region_weights[rn]
 
                 raw_sum = 0.0
-                detrended_sum = 0.0
+                det_sum = 0.0
                 raw_valid_days = 0
-                detrended_valid_days = 0
+                det_valid_days = 0
 
-                for time_index in range(start_index, end_index):
-                    monthday = year_metadata["md"][time_index]
+                for tidx in range(i0, i1):
+                    md_key = info["md"][tidx]
 
-                    climatology_field = baseline_climatology.get(
-                        monthday
-                    )
-                    threshold_field = baseline_p10.get(monthday)
+                    c_field = baseline_clim.get(md_key)
+                    p10_field = baseline_p10.get(md_key)
 
-                    if (
-                        climatology_field is None
-                        or threshold_field is None
-                    ):
+                    if c_field is None or p10_field is None:
                         continue
 
-                    raw_anomaly = (
-                        arr[member_index, time_index]
-                        - climatology_field
+                    raw_anom = arr[mi, tidx] - c_field
+                    det_anom = det[mi, tidx]
+
+                    frac_raw = region_area_fraction_below_threshold(
+                        raw_anom, p10_field,
+                        lat_mask, lon_mask, w2d
                     )
 
-                    detrended_anomaly = detrended[
-                        member_index,
-                        time_index,
-                    ]
-
-                    raw_fraction = region_area_fraction_below_threshold(
-                        raw_anomaly,
-                        threshold_field,
-                        lat_mask,
-                        lon_mask,
-                        weights_2d,
+                    frac_det = region_area_fraction_below_threshold(
+                        det_anom, p10_field,
+                        lat_mask, lon_mask, w2d
                     )
 
-                    detrended_fraction = (
-                        region_area_fraction_below_threshold(
-                            detrended_anomaly,
-                            threshold_field,
-                            lat_mask,
-                            lon_mask,
-                            weights_2d,
-                        )
-                    )
-
-                    if np.isfinite(raw_fraction):
-                        raw_sum += raw_fraction * 100.0
+                    if np.isfinite(frac_raw):
+                        raw_sum += frac_raw * 100.0
                         raw_valid_days += 1
 
-                    if np.isfinite(detrended_fraction):
-                        detrended_sum += detrended_fraction * 100.0
-                        detrended_valid_days += 1
+                    if np.isfinite(frac_det):
+                        det_sum += frac_det * 100.0
+                        det_valid_days += 1
 
-                    del raw_anomaly, detrended_anomaly
+                    del raw_anom, det_anom
 
-                event_key = (
-                    year,
-                    member,
-                    onset_date,
-                    region_name,
-                )
+                key_ev = (year, member, center, rn)
+                event_cache_raw[key_ev] = raw_sum if raw_valid_days > 0 else np.nan
+                event_cache_det[key_ev] = det_sum if det_valid_days > 0 else np.nan
 
-                event_cache_raw[event_key] = (
-                    raw_sum if raw_valid_days > 0 else np.nan
-                )
-
-                event_cache_detrended[event_key] = (
-                    detrended_sum
-                    if detrended_valid_days > 0
-                    else np.nan
-                )
-
-        del arr, detrended
+        del arr, det
         gc.collect()
 
-        print(f"  Event cache complete: {year}")
+        print(f"  Event cache {year} done")
 
-    return event_cache_raw, event_cache_detrended
+    return event_cache_raw, event_cache_det
 
 
 # ================================================================
-# SLIDING-WINDOW AGGREGATION
+# sliding aggregation + no-SSW climatology
 # ================================================================
-def append_statistics(values, destination):
-    """Append mean, standard error, and sample count."""
-    array = np.array(values, dtype=float)
-    array = array[np.isfinite(array)]
-
-    n_values = len(array)
-    destination["n"].append(n_values)
-
-    if n_values == 0:
-        destination["mean"].append(np.nan)
-        destination["se"].append(np.nan)
-
-    elif n_values == 1:
-        destination["mean"].append(array[0])
-        destination["se"].append(np.nan)
-
-    else:
-        destination["mean"].append(np.nanmean(array))
-        destination["se"].append(
-            np.nanstd(array, ddof=1) / np.sqrt(n_values)
-        )
-
-
-def cumulative_cold_area_for_member(
-    arr,
-    detrended,
-    member_index,
-    matched_indices,
-    metadata_for_year,
-    baseline_climatology,
-    baseline_p10,
-    lat_mask,
-    lon_mask,
-    weights_2d,
-):
-    """Calculate raw and detrended cumulative cold-area values."""
-    raw_sum = 0.0
-    detrended_sum = 0.0
-    raw_valid_days = 0
-    detrended_valid_days = 0
-
-    for time_index in matched_indices:
-        monthday = metadata_for_year["md"][time_index]
-
-        climatology_field = baseline_climatology.get(monthday)
-        threshold_field = baseline_p10.get(monthday)
-
-        if climatology_field is None or threshold_field is None:
-            continue
-
-        raw_anomaly = (
-            arr[member_index, time_index]
-            - climatology_field
-        )
-
-        detrended_anomaly = detrended[member_index, time_index]
-
-        raw_fraction = region_area_fraction_below_threshold(
-            raw_anomaly,
-            threshold_field,
-            lat_mask,
-            lon_mask,
-            weights_2d,
-        )
-
-        detrended_fraction = region_area_fraction_below_threshold(
-            detrended_anomaly,
-            threshold_field,
-            lat_mask,
-            lon_mask,
-            weights_2d,
-        )
-
-        if np.isfinite(raw_fraction):
-            raw_sum += raw_fraction * 100.0
-            raw_valid_days += 1
-
-        if np.isfinite(detrended_fraction):
-            detrended_sum += detrended_fraction * 100.0
-            detrended_valid_days += 1
-
-        del raw_anomaly, detrended_anomaly
-
-    raw_value = raw_sum if raw_valid_days > 0 else np.nan
-
-    detrended_value = (
-        detrended_sum
-        if detrended_valid_days > 0
-        else np.nan
-    )
-
-    return raw_value, detrended_value
-
-
-def aggregate_sliding_with_non_ssw_analogs(
-    ssw_df,
-    metadata,
-    baseline_climatology,
-    baseline_p10,
-    coefficients,
-    event_cache_raw,
-    event_cache_detrended,
-):
+def aggregate_sliding_with_global_clim(ssw_df, meta_u, baseline_clim,
+                                       baseline_p10, coeffs,
+                                       event_cache_raw, event_cache_det):
     """
-    Aggregate SSW events and matched-date non-SSW analogs.
+    Sliding-window aggregation.
 
-    For each 10-year window:
-        - SSW values are the means over all retained SSW events.
-        - Non-SSW analogs use the same calendar-day window as each SSW
-          event, sampled from all year-member pairs without an SSW
-          in that sliding period.
+    SSW:
+        average cumulative cold-anomaly area over all SSW events in each window.
+
+    No-SSW climatology:
+        for each SSW event in the window, take the same calendar-day window
+        from no-SSW year/member pairs within the same 10-year window.
+        Each no-SSW analog contributes one cumulative value.
     """
-    first_event_year = int(ssw_df["init_year"].min())
-    last_event_year = int(ssw_df["init_year"].max())
+    yr_min = int(ssw_df["init_year"].min())
+    yr_max = int(ssw_df["init_year"].max())
 
     windows = [
-        (year, year + SLIDING_WINDOW - 1)
-        for year in range(
-            first_event_year,
-            last_event_year - SLIDING_WINDOW + 2,
-        )
+        (y, y + SLIDING_WINDOW - 1)
+        for y in range(yr_min, yr_max - SLIDING_WINDOW + 2)
     ]
 
-    first_year = sorted(metadata.keys())[0]
+    first_year = sorted(meta_u.keys())[0]
 
-    region_weights = {
-        region_name: cosine_weights_2d(
-            metadata[first_year]["lat_vals"],
-            metadata[first_year]["lon_vals"],
-            region_box,
+    region_weights = {}
+    for rn, rb in REGION_BOXES.items():
+        region_weights[rn] = cosine_weights_2d(
+            meta_u[first_year]["lat_vals"],
+            meta_u[first_year]["lon_vals"],
+            rb
         )
-        for region_name, region_box in REGION_BOXES.items()
-    }
 
     ssw_pairs = set(
-        zip(
-            ssw_df["init_year"].astype(int),
-            ssw_df["member"].astype(int),
-        )
+        zip(ssw_df["init_year"].astype(int), ssw_df["member"].astype(int))
     )
 
-    time_series = {
-        region_name: {
-            tag: {
-                "xc": [],
-                "mean": [],
-                "se": [],
-                "n": [],
-            }
-            for tag in (
-                "raw",
-                "det",
-                "clim_raw",
-                "clim_det",
-            )
+    ts = {
+        rn: {
+            tag: {"xc": [], "mean": [], "se": [], "n": []}
+            for tag in ["raw", "det", "clim_raw", "clim_det"]
         }
-        for region_name in REGION_ORDER
+        for rn in REGION_ORDER
     }
 
-    for window_start, window_end in windows:
-        events_in_window = ssw_df[
-            ssw_df["init_year"].between(
-                window_start,
-                window_end,
-            )
+    def _append_stats(lst, d):
+        vals = np.array(lst, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        n = len(vals)
+
+        d["n"].append(n)
+
+        if n == 0:
+            d["mean"].append(np.nan)
+            d["se"].append(np.nan)
+        elif n == 1:
+            d["mean"].append(vals[0])
+            d["se"].append(np.nan)
+        else:
+            d["mean"].append(np.nanmean(vals))
+            d["se"].append(np.nanstd(vals, ddof=1) / np.sqrt(n))
+
+    for ws, we in windows:
+        dfp = ssw_df[ssw_df["init_year"].between(ws, we)]
+        xc = ws + (SLIDING_WINDOW - 1) / 2.0
+
+        no_ssw_in_window = [
+            (year, m)
+            for year in range(ws, we + 1)
+            if year in meta_u
+            for m in range(N_MEMBERS)
+            if (year, m) not in ssw_pairs
         ]
 
-        x_center = window_start + (SLIDING_WINDOW - 1) / 2.0
+        # ── diagnostic output ──────────────────────────────────
+        no_ssw_years  = sorted(set(y for y, m in no_ssw_in_window))
+        no_ssw_counts = {
+            y: sum(1 for yy, mm in no_ssw_in_window if yy == y)
+            for y in no_ssw_years
+        }
+        total_possible = sum(
+            N_MEMBERS for year in range(ws, we + 1) if year in meta_u
+        )
+        print(f"\nWindow {ws}-{we}:")
+        print(f"  SSW events in window  : {len(dfp)}")
+        print(f"  No-SSW (year,member)  : {len(no_ssw_in_window)} / {total_possible} total slots")
+        print(f"  No-SSW years present  : {no_ssw_years}")
+        print(f"  No-SSW members/year   : {no_ssw_counts}")
+        # ─────────────────────────────────────────────────
 
-        non_ssw_pairs = [
-            (year, member)
-            for year in range(window_start, window_end + 1)
-            if year in metadata
-            for member in metadata[year]["member_to_idx"]
-            if (year, member) not in ssw_pairs
-        ]
-
-        print(f"\nWindow {window_start}-{window_end}")
-        print(f"  SSW events: {len(events_in_window)}")
-        print(f"  Non-SSW year-member pairs: {len(non_ssw_pairs)}")
-
+        # Load all years in this sliding window
         window_data = {}
 
-        for year in range(window_start, window_end + 1):
-            if year not in metadata:
+        # Load all years in this sliding window
+        window_data = {}
+
+        for year in range(ws, we + 1):
+            if year not in meta_u:
                 continue
 
             try:
-                window_data[year] = compute_detrended_year(
-                    year,
-                    metadata,
-                    baseline_climatology,
-                    coefficients,
-                )
-            except Exception as error:
-                print(
-                    f"  [WARNING] Could not load {year}: {error}"
-                )
+                arr, det = compute_detrended_year(year, meta_u, baseline_clim, coeffs)
+                window_data[year] = (arr, det)
+            except Exception as e:
+                print(f"  [WARN] window data {year}: {e}")
 
             gc.collect()
 
-        for region_name in REGION_ORDER:
-            lat_mask, lon_mask, weights_2d = (
-                region_weights[region_name]
-            )
+        for rn in REGION_ORDER:
+            lat_mask, lon_mask, w2d = region_weights[rn]
 
-            raw_event_values = []
-            detrended_event_values = []
+            # ----------------------------
+            #  Post-SSW event values
+            # ----------------------------
+            rv_list = []
+            dv_list = []
 
-            for _, row in events_in_window.iterrows():
-                event_key = (
-                    int(row["init_year"]),
-                    int(row["member"]),
-                    pd.Timestamp(row["ssw_date"]).normalize(),
-                    region_name,
-                )
+            for _, row in dfp.iterrows():
+                year = int(row["init_year"])
+                member = int(row["member"])
+                ssw_date = pd.Timestamp(row["ssw_date"]).normalize()
 
-                if event_key in event_cache_raw:
-                    raw_event_values.append(
-                        event_cache_raw[event_key]
-                    )
-                    detrended_event_values.append(
-                        event_cache_detrended[event_key]
-                    )
+                key_ev = (year, member, ssw_date, rn)
 
-            time_series[region_name]["raw"]["xc"].append(x_center)
-            time_series[region_name]["det"]["xc"].append(x_center)
+                if key_ev in event_cache_raw:
+                    rv_list.append(event_cache_raw[key_ev])
+                    dv_list.append(event_cache_det[key_ev])
 
-            append_statistics(
-                raw_event_values,
-                time_series[region_name]["raw"],
-            )
+            ts[rn]["raw"]["xc"].append(xc)
+            ts[rn]["det"]["xc"].append(xc)
+            _append_stats(rv_list, ts[rn]["raw"])
+            _append_stats(dv_list, ts[rn]["det"])
 
-            append_statistics(
-                detrended_event_values,
-                time_series[region_name]["det"],
-            )
+            # ----------------------------
+            # No-SSW analog values
+            # ----------------------------
+            clim_raw_list = []
+            clim_det_list = []
 
-            non_ssw_raw_values = []
-            non_ssw_detrended_values = []
+            for _, row in dfp.iterrows():
+                center = pd.Timestamp(row["ssw_date"]).normalize()
 
-            for _, event_row in events_in_window.iterrows():
-                onset_date = pd.Timestamp(
-                    event_row["ssw_date"]
-                ).normalize()
+                # same post-event calendar-day window for this event
+                event_mds = set()
+                for d in range(DAY_START, DAY_END + 1):
+                    date = center + pd.Timedelta(days=d)
+                    event_mds.add((date.month, date.day))
 
-                target_calendar_days = {
-                    (
-                        (onset_date + pd.Timedelta(days=offset)).month,
-                        (onset_date + pd.Timedelta(days=offset)).day,
-                    )
-                    for offset in range(DAY_START, DAY_END + 1)
-                }
-
-                for analog_year, analog_member in non_ssw_pairs:
-                    if analog_year not in window_data:
+                for yr_c, m_c in no_ssw_in_window:
+                    if yr_c not in window_data:
                         continue
 
-                    arr, detrended = window_data[analog_year]
-                    analog_metadata = metadata[analog_year]
+                    arr_c, det_c = window_data[yr_c]
+                    info_c = meta_u[yr_c]
 
-                    if analog_member not in analog_metadata["member_to_idx"]:
-                        continue
-
-                    member_index = analog_metadata["member_to_idx"][
-                        analog_member
+                    matched = [
+                        idx for date, idx in info_c["time_to_idx"].items()
+                        if (date.month, date.day) in event_mds
                     ]
 
-                    matched_indices = [
-                        index
-                        for date, index in analog_metadata[
-                            "time_to_idx"
-                        ].items()
-                        if (date.month, date.day)
-                        in target_calendar_days
-                    ]
-
-                    if not matched_indices:
+                    if len(matched) == 0:
                         continue
 
-                    raw_value, detrended_value = (
-                        cumulative_cold_area_for_member(
-                            arr,
-                            detrended,
-                            member_index,
-                            matched_indices,
-                            analog_metadata,
-                            baseline_climatology,
-                            baseline_p10,
-                            lat_mask,
-                            lon_mask,
-                            weights_2d,
+                    raw_sum = 0.0
+                    det_sum = 0.0
+                    raw_valid_days = 0
+                    det_valid_days = 0
+
+                    for tidx in matched:
+                        md_key = info_c["md"][tidx]
+
+                        c_field = baseline_clim.get(md_key)
+                        p10_field = baseline_p10.get(md_key)
+
+                        if c_field is None or p10_field is None:
+                            continue
+
+                        raw_anom = arr_c[m_c, tidx] - c_field
+                        det_anom = det_c[m_c, tidx]
+
+                        frac_raw = region_area_fraction_below_threshold(
+                            raw_anom, p10_field,
+                            lat_mask, lon_mask, w2d
                         )
-                    )
 
-                    if np.isfinite(raw_value):
-                        non_ssw_raw_values.append(raw_value)
-
-                    if np.isfinite(detrended_value):
-                        non_ssw_detrended_values.append(
-                            detrended_value
+                        frac_det = region_area_fraction_below_threshold(
+                            det_anom, p10_field,
+                            lat_mask, lon_mask, w2d
                         )
 
-            time_series[region_name]["clim_raw"]["xc"].append(
-                x_center
-            )
-            time_series[region_name]["clim_det"]["xc"].append(
-                x_center
-            )
+                        if np.isfinite(frac_raw):
+                            raw_sum += frac_raw * 100.0
+                            raw_valid_days += 1
 
-            append_statistics(
-                non_ssw_raw_values,
-                time_series[region_name]["clim_raw"],
-            )
+                        if np.isfinite(frac_det):
+                            det_sum += frac_det * 100.0
+                            det_valid_days += 1
 
-            append_statistics(
-                non_ssw_detrended_values,
-                time_series[region_name]["clim_det"],
-            )
+                        del raw_anom, det_anom
+
+                    if raw_valid_days > 0:
+                        clim_raw_list.append(raw_sum)
+
+                    if det_valid_days > 0:
+                        clim_det_list.append(det_sum)
+
+            ts[rn]["clim_raw"]["xc"].append(xc)
+            ts[rn]["clim_det"]["xc"].append(xc)
+            _append_stats(clim_raw_list, ts[rn]["clim_raw"])
+            _append_stats(clim_det_list, ts[rn]["clim_det"])
+
+        for year in list(window_data.keys()):
+            del window_data[year]
 
         del window_data
         gc.collect()
 
-        print(f"  Window complete: {window_start}-{window_end}")
+        print(f"  Window {ws}-{we} done  (no-SSW pairs: {len(no_ssw_in_window)})")
 
-    for region_name in REGION_ORDER:
-        for tag in ("raw", "det", "clim_raw", "clim_det"):
-            for key in ("xc", "mean", "se", "n"):
-                time_series[region_name][tag][key] = np.array(
-                    time_series[region_name][tag][key]
-                )
+    for rn in REGION_ORDER:
+        for tag in ["raw", "det", "clim_raw", "clim_det"]:
+            for k in ["xc", "mean", "se", "n"]:
+                ts[rn][tag][k] = np.array(ts[rn][tag][k])
 
-    return time_series
+    return ts
 
 
 # ================================================================
-# CACHE
+# cache
 # ================================================================
-def save_cache(path, time_series):
-    """Save sliding-window results to NPZ."""
-    output = {}
+def save_cache(path, ts):
+    d = {}
 
-    for region_name in REGION_ORDER:
-        for tag in ("raw", "det", "clim_raw", "clim_det"):
-            prefix = f"{region_name}__{tag}"
+    for rn in REGION_ORDER:
+        for tag in ["raw", "det", "clim_raw", "clim_det"]:
+            pfx = f"{rn}__{tag}"
+            d[f"{pfx}__xc"]   = ts[rn][tag]["xc"]
+            d[f"{pfx}__mean"] = ts[rn][tag]["mean"]
+            d[f"{pfx}__se"]   = ts[rn][tag]["se"]
+            d[f"{pfx}__n"]    = ts[rn][tag]["n"]
 
-            output[f"{prefix}__xc"] = (
-                time_series[region_name][tag]["xc"]
-            )
-            output[f"{prefix}__mean"] = (
-                time_series[region_name][tag]["mean"]
-            )
-            output[f"{prefix}__se"] = (
-                time_series[region_name][tag]["se"]
-            )
-            output[f"{prefix}__n"] = (
-                time_series[region_name][tag]["n"]
-            )
-
-    np.savez(path, **output)
-
-    print(f"Saved cache: {path}")
+    np.savez(path, **d)
+    print(f"Saved: {path}")
 
 
 def load_cache(path):
-    """Load sliding-window results from NPZ."""
-    if not path.exists():
-        raise FileNotFoundError(f"Cache file not found: {path}")
+    data = np.load(path, allow_pickle=True)
 
-    data = np.load(path, allow_pickle=False)
-
-    time_series = {
-        region_name: {
+    ts = {
+        rn: {
             tag: {}
-            for tag in ("raw", "det", "clim_raw", "clim_det")
+            for tag in ["raw", "det", "clim_raw", "clim_det"]
         }
-        for region_name in REGION_ORDER
+        for rn in REGION_ORDER
     }
 
-    for region_name in REGION_ORDER:
-        for tag in ("raw", "det", "clim_raw", "clim_det"):
-            prefix = f"{region_name}__{tag}"
+    for rn in REGION_ORDER:
+        for tag in ["raw", "det", "clim_raw", "clim_det"]:
+            pfx = f"{rn}__{tag}"
+            ts[rn][tag]["xc"]   = data[f"{pfx}__xc"]
+            ts[rn][tag]["mean"] = data[f"{pfx}__mean"]
+            ts[rn][tag]["se"]   = data[f"{pfx}__se"]
+            ts[rn][tag]["n"]    = data[f"{pfx}__n"].astype(int)
 
-            time_series[region_name][tag]["xc"] = (
-                data[f"{prefix}__xc"]
-            )
-            time_series[region_name][tag]["mean"] = (
-                data[f"{prefix}__mean"]
-            )
-            time_series[region_name][tag]["se"] = (
-                data[f"{prefix}__se"]
-            )
-            time_series[region_name][tag]["n"] = (
-                data[f"{prefix}__n"].astype(int)
-            )
-
-    print(f"Loaded cache: {path}")
-
-    return time_series
+    print(f"Loaded: {path}")
+    return ts
 
 
-# ================================================================
-# TREND TEST
-# ================================================================
-def block_bootstrap_trend(
-    x_values,
-    mean_values,
-    n_boot=2000,
-    block_size=7,
-    seed=42,
-):
-    """Calculate Theil-Sen slope and block-bootstrap p value."""
-    random_generator = np.random.default_rng(seed)
+def block_bootstrap_trend(xv, mv, n_boot=2000, block_size=7, seed=42):
+    rng = np.random.default_rng(seed)
+    n = len(mv)
 
-    n_values = len(mean_values)
-
-    if n_values < 3:
+    if n < 3:
         return np.nan, np.nan
 
-    observed_slope = theilslopes(
-        mean_values,
-        x_values,
-    ).slope
+    obs_slope = theilslopes(mv, xv).slope
 
-    bootstrap_slopes = []
+    boot_slopes = []
 
     for _ in range(n_boot):
         indices = []
 
-        while len(indices) < n_values:
-            start = random_generator.integers(
-                0,
-                max(1, n_values - block_size + 1),
-            )
+        while len(indices) < n:
+            start = rng.integers(0, max(1, n - block_size + 1))
+            indices.extend(range(start, min(start + block_size, n)))
 
-            indices.extend(
-                range(start, min(start + block_size, n_values))
-            )
+        idx = np.array(indices[:n])
+        boot_slopes.append(theilslopes(mv[idx], xv).slope)
 
-        sample_indices = np.array(indices[:n_values])
+    boot_slopes = np.array(boot_slopes)
+    boot_centered = boot_slopes - np.mean(boot_slopes)
 
-        bootstrap_slopes.append(
-            theilslopes(
-                mean_values[sample_indices],
-                x_values,
-            ).slope
-        )
+    p = float(np.mean(np.abs(boot_centered) >= np.abs(obs_slope)))
 
-    bootstrap_slopes = np.array(bootstrap_slopes)
-    centered_slopes = bootstrap_slopes - np.mean(bootstrap_slopes)
-
-    p_value = float(
-        np.mean(
-            np.abs(centered_slopes)
-            >= np.abs(observed_slope)
-        )
-    )
-
-    return observed_slope, p_value
+    return obs_slope, p
 
 
 # ================================================================
-# PLOT
+# plot
 # ================================================================
-def plot_results(time_series):
-    """
-    Plot raw and detrended post-SSW cold-anomaly area.
-
-    Cached cumulative values are divided by N_DAYS only for plotting,
-    so the figure displays mean daily cold-area fraction in percent.
-    """
+def plot_results(ts):
     import matplotlib.lines as mlines
+    # =====================================================
+    # Convert cumulative (% area × day) to mean area (%)
+    # Only for plotting; original ts / npz remain unchanged
+    # =====================================================
+    ts_plot = {}
 
-    plot_data = {}
+    for rn in REGION_ORDER:
+        ts_plot[rn] = {}
 
-    for region_name in REGION_ORDER:
-        plot_data[region_name] = {}
-
-        for tag in ("raw", "det", "clim_raw", "clim_det"):
-            plot_data[region_name][tag] = {
-                "xc": time_series[region_name][tag]["xc"].copy(),
-                "mean": (
-                    time_series[region_name][tag]["mean"].copy()
-                    / N_DAYS
-                ),
-                "se": (
-                    time_series[region_name][tag]["se"].copy()
-                    / N_DAYS
-                ),
-                "n": time_series[region_name][tag]["n"].copy(),
+        for tag in ["raw", "det", "clim_raw", "clim_det"]:
+            ts_plot[rn][tag] = {
+                "xc":   ts[rn][tag]["xc"].copy(),
+                "mean": ts[rn][tag]["mean"].copy() / N_DAYS,
+                "se":   ts[rn][tag]["se"].copy() / N_DAYS,
+                "n":    ts[rn][tag]["n"].copy(),
             }
 
-    fig, axes = plt.subplots(
-        1,
-        2,
-        figsize=(12, 5),
-        sharey=False,
-    )
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
 
-    panel_info = (
-        ("raw", "clim_raw", "Raw T2m anomaly"),
-        ("det", "clim_det", "Detrended T2m anomaly"),
-    )
+    panel_info = [
+        ("raw", "clim_raw", "Raw Tanom"),
+        ("det", "clim_det", "Detrended Tanom"),
+    ]
 
-    panel_labels = ("(a)", "(b)")
+    panel_labels = ["(a)", "(b)"]
 
-    for panel_index, (tag, climatology_tag, title) in enumerate(
-        panel_info
-    ):
-        ax = axes[panel_index]
-        trend_lines = {
-            region_name: {}
-            for region_name in REGION_ORDER
-        }
+    for ci, (tag, clim_tag, title) in enumerate(panel_info):
+        ax = axes[ci]
+        trend_lines = {rn: {} for rn in REGION_ORDER}
 
-        # ------------------------------------------------------------
-        # Non-SSW matched-date analogs
-        # ------------------------------------------------------------
-        for region_name in REGION_ORDER:
-            color = REGION_COLORS[region_name]
+        # ----------------------------
+        # no-SSW climatology, dashed
+        # ----------------------------
+        for rn in REGION_ORDER:
+            col = REGION_COLORS[rn]
 
-            x_values = plot_data[region_name][climatology_tag]["xc"]
-            means = plot_data[region_name][climatology_tag]["mean"]
-            errors = plot_data[region_name][climatology_tag]["se"]
+            xc = ts_plot[rn][clim_tag]["xc"]
+            mean = ts_plot[rn][clim_tag]["mean"]
+            se = ts_plot[rn][clim_tag]["se"]
 
-            valid = np.isfinite(means)
+            valid = np.isfinite(mean)
+            xv, mv, sv = xc[valid], mean[valid], se[valid]
 
-            x_valid = x_values[valid]
-            mean_valid = means[valid]
-            error_valid = errors[valid]
-
-            if len(x_valid) == 0:
+            if len(xv) == 0:
                 continue
 
-            ax.plot(
-                x_valid,
-                mean_valid,
-                color=color,
-                lw=1.6,
-                ls="--",
-                alpha=0.65,
-                zorder=1,
-            )
+            ax.plot(xv, mv, color=col, lw=1.6, ls="--", alpha=0.65, zorder=1)
 
-            good_errors = np.isfinite(error_valid)
-
-            if np.any(good_errors):
+            good_se = np.isfinite(sv)
+            if good_se.sum() > 0:
                 ax.fill_between(
-                    x_valid[good_errors],
-                    (mean_valid - error_valid)[good_errors],
-                    (mean_valid + error_valid)[good_errors],
-                    color=color,
+                    xv[good_se],
+                    (mv - 1.96 * sv)[good_se],
+                    (mv + 1.96 * sv)[good_se],
+                    color=col,
                     alpha=0.08,
                     zorder=1,
                 )
 
-            if len(x_valid) >= 3:
-                trend_result = theilslopes(
-                    mean_valid,
-                    x_valid,
-                    method="joint",
+            if len(xv) >= 3:
+                ts_res_c = theilslopes(mv, xv, method="joint")
+                _, p_val_c = block_bootstrap_trend(
+                    xv, mv, n_boot=2000, block_size=7
                 )
 
-                _, p_value = block_bootstrap_trend(
-                    x_valid,
-                    mean_valid,
-                    n_boot=2000,
-                    block_size=7,
-                )
-
-                significance = (
-                    "**"
-                    if p_value < 0.01
-                    else "*" if p_value < 0.05 else ""
-                )
+                # sig_c = "**" if p_val_c < 0.01 else ("*" if p_val_c < 0.05 else "")
+                sig_c = "*" if p_val_c < 0.05 else ""
+               
+               
 
                 ax.plot(
-                    x_valid,
-                    trend_result.intercept
-                    + trend_result.slope * x_valid,
-                    color=color,
+                    xv,
+                    ts_res_c.intercept + ts_res_c.slope * xv,
+                    color=col,
                     lw=1.2,
                     ls=":",
                     alpha=0.75,
                     zorder=4,
                 )
 
-                trend_lines[region_name]["clim"] = (
-                    trend_result.slope,
-                    significance,
-                )
+                trend_lines[rn]["clim"] = (ts_res_c.slope, sig_c)
 
-        # ------------------------------------------------------------
-        # Post-SSW events
-        # ------------------------------------------------------------
-        for region_name in REGION_ORDER:
-            color = REGION_COLORS[region_name]
+        # ----------------------------
+        # post-SSW, solid
+        # ----------------------------
+        for rn in REGION_ORDER:
+            col = REGION_COLORS[rn]
 
-            x_values = plot_data[region_name][tag]["xc"]
-            means = plot_data[region_name][tag]["mean"]
-            errors = plot_data[region_name][tag]["se"]
+            xc = ts_plot[rn][tag]["xc"]
+            mean = ts_plot[rn][tag]["mean"]
+            se = ts_plot[rn][tag]["se"]
 
-            valid = np.isfinite(means)
+            valid = np.isfinite(mean)
+            xv, mv, sv = xc[valid], mean[valid], se[valid]
 
-            x_valid = x_values[valid]
-            mean_valid = means[valid]
-            error_valid = errors[valid]
-
-            if len(x_valid) == 0:
+            if len(xv) == 0:
                 continue
 
-            good_errors = np.isfinite(error_valid)
-
-            if np.any(good_errors):
+            good_se = np.isfinite(sv)
+            if good_se.sum() > 0:
                 ax.fill_between(
-                    x_valid[good_errors],
-                    (mean_valid - error_valid)[good_errors],
-                    (mean_valid + error_valid)[good_errors],
-                    color=color,
+                    xv[good_se],
+                    (mv - 1.96 * sv)[good_se],
+                    (mv + 1.96 * sv)[good_se],
+                    color=col,
                     alpha=0.22,
                     zorder=2,
                 )
 
             ax.plot(
-                x_valid,
-                mean_valid,
-                color=color,
+                xv,
+                mv,
+                color=col,
                 lw=2.4,
                 alpha=0.92,
                 zorder=3,
-                label=REGION_LABELS[region_name],
+                label=REGION_LABELS[rn],
             )
 
-            if len(x_valid) >= 3:
-                trend_result = theilslopes(
-                    mean_valid,
-                    x_valid,
-                    method="joint",
+            if len(xv) >= 3:
+                ts_res_s = theilslopes(mv, xv, method="joint")
+                _, p_val_s = block_bootstrap_trend(
+                    xv, mv, n_boot=2000, block_size=7
                 )
 
-                _, p_value = block_bootstrap_trend(
-                    x_valid,
-                    mean_valid,
-                    n_boot=2000,
-                    block_size=7,
-                )
-
-                significance = (
-                    "**"
-                    if p_value < 0.01
-                    else "*" if p_value < 0.05 else ""
-                )
+                # sig_s = "**" if p_val_s < 0.01 else ("*" if p_val_s < 0.05 else "")
+                sig_s = "*" if p_val_s < 0.05 else ""
 
                 ax.plot(
-                    x_valid,
-                    trend_result.intercept
-                    + trend_result.slope * x_valid,
-                    color=color,
+                    xv,
+                    ts_res_s.intercept + ts_res_s.slope * xv,
+                    color=col,
                     lw=1.2,
                     ls=":",
                     alpha=0.75,
                     zorder=4,
                 )
 
-                trend_lines[region_name]["ssw"] = (
-                    trend_result.slope,
-                    significance,
-                )
+                trend_lines[rn]["ssw"] = (ts_res_s.slope, sig_s)
 
-        # ------------------------------------------------------------
-        # Trend table
-        # ------------------------------------------------------------
-        short_names = {
+        # ----------------------------
+        # trend text box
+        # ----------------------------
+        short_name = {
             "NorthAmerica": "N. America",
             "Europe": "Europe",
             "EastAsia": "East Asia",
         }
 
-        lines_text = [
-            "Theil-Sen slope\n(% decade$^{-1}$)",
-            ("Region", "SSW", "Non-SSW"),
-        ]
-        lines_color = ["#888888", "#444444"]
-        lines_weight = ["normal", "bold"]
+        lines_text = []
+        lines_color = []
+        lines_fw = []
 
-        for region_name in REGION_ORDER:
-            ssw_slope, ssw_sig = trend_lines[region_name].get(
-                "ssw",
-                (np.nan, ""),
-            )
+        lines_text.append("Theil-Sen slope\n(% decade$^{-1}$)")
+        lines_color.append("#888888")
+        lines_fw.append("normal")
 
-            clim_slope, clim_sig = trend_lines[region_name].get(
-                "clim",
-                (np.nan, ""),
-            )
+        lines_text.append(("Region", "SSW", "Non-SSW"))
+        lines_color.append("#444444")
+        lines_fw.append("bold")
 
-            ssw_text = (
-                f"{ssw_slope * 10:+.2f}{ssw_sig}"
-                if np.isfinite(ssw_slope)
-                else "—"
-            )
+        for rn in REGION_ORDER:
+            col = REGION_COLORS[rn]
+            sn = short_name[rn]
 
-            clim_text = (
-                f"{clim_slope * 10:+.2f}{clim_sig}"
-                if np.isfinite(clim_slope)
-                else "—"
-            )
+            ssw_s, ssw_sig = trend_lines[rn].get("ssw", (np.nan, ""))
+            clim_s, clim_sig = trend_lines[rn].get("clim", (np.nan, ""))
 
-            lines_text.append(
-                (
-                    short_names[region_name],
-                    ssw_text,
-                    clim_text,
-                )
-            )
-            lines_color.append(REGION_COLORS[region_name])
-            lines_weight.append("normal")
+            ssw_str = f"{ssw_s* 10:+.2f}{ssw_sig}" if np.isfinite(ssw_s) else "—"
+            clim_str = f"{clim_s* 10:+.2f}{clim_sig}" if np.isfinite(clim_s) else "—"
 
-        title_fontsize = 9.0
-        data_fontsize = 10.0
+            lines_text.append((sn, ssw_str, clim_str))
+            lines_color.append(col)
+            lines_fw.append("normal")
 
+        fs_title = 9.0
+        fs_data = 10.0
         x_left = 0.03
-        y_bottom = 0.03
-        line_height = 0.068
+        y_bot = 0.03
+        line_h = 0.068
         n_lines = len(lines_text)
 
-        column_positions = (
+        col_x = [
             x_left + 0.01,
             x_left + 0.24,
             x_left + 0.37,
-        )
+        ]
 
-        box_width = 0.40
-        box_height = line_height * n_lines + 0.06
+        box_w = 0.40
+        box_h = line_h * n_lines + 0.06
 
         ax.add_patch(
             plt.Rectangle(
-                (x_left - 0.015, y_bottom - 0.015),
-                box_width,
-                box_height,
+                (x_left - 0.015, y_bot - 0.015),
+                box_w,
+                box_h,
                 transform=ax.transAxes,
                 facecolor="white",
-                edgecolor="#AAAAAA",
+                edgecolor="#aaaaaa",
                 lw=1.0,
                 alpha=0.93,
                 zorder=8,
@@ -1725,202 +1182,129 @@ def plot_results(time_series):
             )
         )
 
-        for index, (text, color, fontweight) in enumerate(
-            zip(lines_text, lines_color, lines_weight)
-        ):
-            y_position = (
-                y_bottom
-                + (n_lines - 1 - index) * line_height
-                + 0.02
-            )
+        for i, (txt, col, fw) in enumerate(zip(lines_text, lines_color, lines_fw)):
+            ypos = y_bot + (n_lines - 1 - i) * line_h + 0.02
+            fs = fs_title if i == 0 else fs_data
 
-            fontsize = (
-                title_fontsize
-                if index == 0
-                else data_fontsize
-            )
-
-            if index == 0:
+            if i == 0:
                 ax.text(
-                    x_left + box_width / 2 - 0.015,
-                    y_position,
-                    text,
+                    x_left + box_w / 2 - 0.015,
+                    ypos,
+                    txt,
                     transform=ax.transAxes,
                     ha="center",
                     va="bottom",
-                    fontsize=fontsize,
-                    fontweight=fontweight,
-                    color=color,
+                    fontsize=fs,
+                    fontweight=fw,
+                    color=col,
                     zorder=9,
                 )
-
             else:
-                region_text, ssw_text, clim_text = text
+                region_txt, ssw_txt, clim_txt = txt
 
                 ax.text(
-                    column_positions[0],
-                    y_position,
-                    region_text,
+                    col_x[0],
+                    ypos,
+                    region_txt,
                     transform=ax.transAxes,
                     ha="left",
                     va="bottom",
-                    fontsize=fontsize,
-                    fontweight=fontweight,
-                    color=color,
+                    fontsize=fs,
+                    fontweight=fw,
+                    color=col,
                     zorder=9,
                 )
 
                 ax.text(
-                    column_positions[1],
-                    y_position,
-                    ssw_text,
+                    col_x[1],
+                    ypos,
+                    ssw_txt,
                     transform=ax.transAxes,
                     ha="right",
                     va="bottom",
-                    fontsize=fontsize,
-                    fontweight=fontweight,
-                    color=color,
+                    fontsize=fs,
+                    fontweight=fw,
+                    color=col,
                     zorder=9,
                 )
 
                 ax.text(
-                    column_positions[2],
-                    y_position,
-                    clim_text,
+                    col_x[2],
+                    ypos,
+                    clim_txt,
                     transform=ax.transAxes,
                     ha="right",
                     va="bottom",
-                    fontsize=fontsize,
-                    fontweight=fontweight,
-                    color=color,
+                    fontsize=fs,
+                    fontweight=fw,
+                    color=col,
                     zorder=9,
                 )
 
-        # ------------------------------------------------------------
-        # Axes
-        # ------------------------------------------------------------
-        ax.axhline(
-            0,
-            color="black",
-            lw=0.8,
-            alpha=0.40,
-        )
+        # ----------------------------
+        # axes
+        # ----------------------------
+        ax.axhline(0, color="black", lw=0.8, alpha=0.40)
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=8)
+        ax.set_xlabel("10-year sliding window", fontsize=11, fontweight="bold")
+        ax.grid(True, ls="--", lw=0.6, alpha=0.30)
 
-        ax.set_title(
-            title,
-            fontsize=12,
-            fontweight="bold",
-            pad=8,
-        )
-
-        ax.set_xlabel(
-            "10-year sliding window",
-            fontsize=11,
-            fontweight="bold",
-        )
-
-        ax.grid(
-            True,
-            ls="--",
-            lw=0.6,
-            alpha=0.30,
-        )
-
-        if panel_index == 0:
-            ax.set_ylabel("Mean cold-anomaly area (%)")
+        if ci == 0:
+            ax.set_ylabel(
+                f"Mean cold-anomaly area (%)"
+            )
         else:
             ax.set_ylabel("")
 
-        all_values = []
+        # dynamic y-limits
+        all_vals = []
+        for rn in REGION_ORDER:
+            for ttag in [tag, clim_tag]:
+                v = ts_plot[rn][ttag]["mean"]
+                all_vals.extend(v[np.isfinite(v)].tolist())
 
-        for region_name in REGION_ORDER:
-            for current_tag in (tag, climatology_tag):
-                values = plot_data[region_name][current_tag]["mean"]
-                all_values.extend(
-                    values[np.isfinite(values)].tolist()
-                )
-
-        if all_values:
-            ymax = np.nanmax(all_values)
+        if len(all_vals) > 0:
+            ymax = np.nanmax(all_vals)
             ax.set_ylim(0, ymax * 1.20 if ymax > 0 else 1)
 
-        reference_x = time_series[REGION_ORDER[0]][tag]["xc"]
-        reference_mean = time_series[REGION_ORDER[0]][tag]["mean"]
+        xc_ref = ts[REGION_ORDER[0]][tag]["xc"]
+        mean_ref = ts[REGION_ORDER[0]][tag]["mean"]
+        valid_ref = np.isfinite(mean_ref)
 
-        valid_reference = np.isfinite(reference_mean)
+        if valid_ref.sum() > 0:
+            xc_use = xc_ref[valid_ref]
+            first_start = int(round(xc_use[0] - (SLIDING_WINDOW - 1) / 2.0))
+            last_start = int(round(xc_use[-1] - (SLIDING_WINDOW - 1) / 2.0))
 
-        if np.any(valid_reference):
-            used_x = reference_x[valid_reference]
+            window_starts = np.arange(first_start, last_start + 1, 5)
+            xticks = window_starts + (SLIDING_WINDOW - 1) / 2.0
+            xlabels = [f"{ys}–{ys + SLIDING_WINDOW - 1}" for ys in window_starts]
 
-            first_start = int(
-                round(
-                    used_x[0]
-                    - (SLIDING_WINDOW - 1) / 2.0
-                )
+            ax.set_xticks(xticks)
+            ax.set_xticklabels(xlabels, rotation=35, ha="right", fontsize=9)
+
+            ax.set_xlim(
+                xc_ref[valid_ref][0] - 0.5,
+                xc_ref[valid_ref][-1] + 0.5,
             )
-
-            last_start = int(
-                round(
-                    used_x[-1]
-                    - (SLIDING_WINDOW - 1) / 2.0
-                )
-            )
-
-            starts = np.arange(first_start, last_start + 1, 5)
-
-            ticks = starts + (SLIDING_WINDOW - 1) / 2.0
-            labels = [
-                f"{start}-{start + SLIDING_WINDOW - 1}"
-                for start in starts
-            ]
-
-            ax.set_xticks(ticks)
-            ax.set_xticklabels(
-                labels,
-                rotation=35,
-                ha="right",
-                fontsize=9,
-            )
-
-            ax.set_xlim(used_x[0] - 0.5, used_x[-1] + 0.5)
-
-        if panel_index == 0:
+        shade_patch = mpatches.Patch(color="#888888", alpha=0.22, label="95% CI")
+        if ci == 0:
             style_handles = [
-                mlines.Line2D(
-                    [],
-                    [],
-                    color="#555555",
-                    lw=2.4,
-                    ls="-",
-                    label="Post-SSW",
-                ),
-                mlines.Line2D(
-                    [],
-                    [],
-                    color="#555555",
-                    lw=1.6,
-                    ls="--",
-                    label="Non-SSW",
-                ),
-                mlines.Line2D(
-                    [],
-                    [],
-                    color="#555555",
-                    lw=1.2,
-                    ls=":",
-                    label="Theil-Sen trend",
-                ),
+                mlines.Line2D([], [], color="#555", lw=2.4, ls="-", label="Post-SSW"),
+                mlines.Line2D([], [], color="#555", lw=1.6, ls="--", label="Non-SSW"),
+                mlines.Line2D([], [], color="#555", lw=1.2, ls=":", label="Theil-Sen trend"),
+                shade_patch,
             ]
 
             region_handles = [
                 mlines.Line2D(
                     [],
                     [],
-                    color=REGION_COLORS[region_name],
+                    color=REGION_COLORS[rn],
                     lw=2.4,
-                    label=REGION_LABELS[region_name],
+                    label=REGION_LABELS[rn],
                 )
-                for region_name in REGION_ORDER
+                for rn in REGION_ORDER
             ]
 
             ax.legend(
@@ -1928,7 +1312,7 @@ def plot_results(time_series):
                 fontsize=8.5,
                 loc="upper right",
                 framealpha=0.92,
-                edgecolor="#CCCCCC",
+                edgecolor="#cccccc",
                 frameon=True,
                 ncol=1,
                 handlelength=2.2,
@@ -1938,105 +1322,82 @@ def plot_results(time_series):
         ax.text(
             0.02,
             0.98,
-            panel_labels[panel_index],
+            panel_labels[ci],
             transform=ax.transAxes,
             ha="left",
             va="top",
             fontsize=13,
             fontweight="bold",
-            bbox={
-                "facecolor": "white",
-                "edgecolor": "none",
-                "alpha": 0.80,
-                "pad": 1.5,
-            },
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.80, pad=1.5),
             zorder=10,
         )
 
     plt.suptitle(
-        "Post-SSW mean cold-anomaly area",
+        f"post-SSW mean cold-anomaly area ",
         fontsize=14,
         fontweight="bold",
-        y=1.0,
+        y=1,
     )
 
-    plt.tight_layout(rect=(0, 0, 1, 1))
-    plt.savefig(PDF_PATH, dpi=300, bbox_inches="tight")
-    plt.close(fig)
+    plt.tight_layout(rect=[0, 0, 1, 1])
+    plt.savefig(PNG_PATH, dpi=300, bbox_inches="tight")
+    plt.close()
 
-    print(f"Saved figure: {PDF_PATH}")
+    print(f"Saved figure: {PNG_PATH}")
 
 
 # ================================================================
-# MAIN
+# main
 # ================================================================
 def main():
-    """Run the Figure 4 analysis."""
-    print("=" * 70)
-    print("Figure 4: post-SSW cold-anomaly area")
-    print(f"Output figure: {PDF_PATH}")
-    print("=" * 70)
-
     ssw_df = read_ssw_events()
 
     if NPZ_PATH.exists():
-        print("\nCache found. Loading cached data.")
-        time_series = load_cache(NPZ_PATH)
-
+        print("Cache found, loading...")
+        ts = load_cache(NPZ_PATH)
     else:
-        print("\nScanning daily-file metadata.")
-        metadata = scan_all_years()
+        print("Scanning year metadata...")
+        meta_u = scan_all_years()
 
-        baseline_climatology = build_baseline_climatology(
-            metadata
-        )
+        baseline_clim = build_baseline_climatology(meta_u)
 
         baseline_p10 = build_baseline_p10_threshold(
-            metadata,
-            baseline_climatology,
+            meta_u,
+            baseline_clim
         )
 
-        coefficients = build_trend_coefficients(
-            metadata,
-            baseline_climatology,
+        coeffs = build_slope_and_intercept(
+            meta_u,
+            baseline_clim
         )
 
-        event_cache_raw, event_cache_detrended = build_event_cache(
+        event_cache_raw, event_cache_det = build_event_cache(
             ssw_df,
-            metadata,
-            baseline_climatology,
+            meta_u,
+            baseline_clim,
             baseline_p10,
-            coefficients,
+            coeffs
         )
 
-        time_series = aggregate_sliding_with_non_ssw_analogs(
+        ts = aggregate_sliding_with_global_clim(
             ssw_df,
-            metadata,
-            baseline_climatology,
+            meta_u,
+            baseline_clim,
             baseline_p10,
-            coefficients,
+            coeffs,
             event_cache_raw,
-            event_cache_detrended,
+            event_cache_det
         )
 
-        save_cache(NPZ_PATH, time_series)
-
-        del (
-            metadata,
-            baseline_climatology,
-            baseline_p10,
-            coefficients,
-            event_cache_raw,
-            event_cache_detrended,
-        )
+        save_cache(NPZ_PATH, ts)
+    
+        del baseline_clim, baseline_p10, coeffs
+        del event_cache_raw, event_cache_det, meta_u
         gc.collect()
 
-    plot_results(time_series)
-
-    del ssw_df, time_series
-    gc.collect()
-
-    print("\nFinished.")
+    plot_results(ts)
+    print("Done.")
+    
 
 
 if __name__ == "__main__":
