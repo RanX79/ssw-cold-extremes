@@ -32,13 +32,15 @@ from matplotlib.lines import Line2D
 # ================================================================
 # USER SETTINGS
 # ================================================================
-SEAS5_SSW_CSV_PATH = Path(r"path/to/your/data/SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
-ERA5_SSW_CSV_PATH  = Path(r"path/to/your/data/ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
+# SEAS5_SSW_CSV_PATH = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+SEAS5_SSW_CSV_PATH = Path(r"F:\data\IFS_daily\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_biascorrected_1981_2024.csv")
+ERA5_SSW_CSV_PATH  = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure\ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
 
-SEAS5_U10_DIR = Path(r"path/to/your/data/IFS_U10")
-ERA5_U_FILE   = Path(r"path/to/your/data/ERA5_u_daily_1940_2025_10_no229.nc")
 
-OUTPUT_DIR = Path(r"path/to/your/results")
+SEAS5_U10_DIR = Path(r"F:\data\IFS_U10")
+ERA5_U_FILE   = Path(r"F:\data\ERA5_data\ERA5_u_daily_1940_2025_10_no229.nc")
+
+OUTPUT_DIR = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 START_YEAR = 1981
@@ -59,14 +61,14 @@ RANDOM_SEED           = 42
 ROLLING_WINDOW_YEARS  = 10
 
 # NPZ cache file paths
-NPZ_ERA5_RAW   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_raw0_5_{BASELINE_END}.npz"
-NPZ_ERA5_DET   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_det0_5_{BASELINE_END}.npz"
-NPZ_SEAS5_RAW  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_raw0_5_{BASELINE_END}.npz"
-NPZ_SEAS5_DET  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_det0_5_{BASELINE_END}.npz"
-NPZ_SEAS5_META = OUTPUT_DIR / f"SI2_cache_SEAS5_meta0_5_{BASELINE_END}.npz"
+NPZ_ERA5_RAW   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_raw0_5_{BASELINE_END}_bias.npz"
+NPZ_ERA5_DET   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_det0_5_{BASELINE_END}_bias.npz"
+NPZ_SEAS5_RAW  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_raw0_5_{BASELINE_END}_bias.npz"
+NPZ_SEAS5_DET  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_det0_5_{BASELINE_END}_bias.npz"
+NPZ_SEAS5_META = OUTPUT_DIR / f"SI2_cache_SEAS5_meta0_5_{BASELINE_END}_bias.npz"
 
-SUMMARY_CSV = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rolling_{BASELINE_END}.csv"
-FIG_OUT     = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rollin_{BASELINE_END}.pdf"
+SUMMARY_CSV = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rolling_{BASELINE_END}_bias.csv"
+FIG_OUT     = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rollin_{BASELINE_END}_bias.pdf"
 
 
 # ================================================================
@@ -620,7 +622,7 @@ def compute_and_save_seas5_caches():
 
         anom = np.full((nmem, tlen), np.nan, dtype=np.float32)
 
-        # 用 calendar-day climatology
+        # ✅ 用 calendar-day climatology
         for ti in range(tlen):
             key = month_day_key(times[ti])
             cf  = seas5_clim.get(key)
@@ -630,7 +632,7 @@ def compute_and_save_seas5_caches():
 
             anom[:, ti] = arr[:, ti] - cf
 
-        # ensemble mean（整个序列）
+        # ✅ ensemble mean（整个序列）
         em = np.nanmean(anom, axis=0).astype(np.float32)
 
         anom_raw_by_year[year] = anom
@@ -698,7 +700,7 @@ def compute_and_save_seas5_caches():
     # ---- Pass 3: calendar-day detrending ----
     print("\n[Pass 3] Detrending SEAS5 anomalies (calendar-day)...")
 
-    # 收集 calendar-day 的 anomaly（ensemble mean）
+    # ✅ Step 1: 收集 calendar-day 的 anomaly（ensemble mean）
     md_series = {}
 
     for year, arr in anom_raw_by_year.items():
@@ -717,7 +719,7 @@ def compute_and_save_seas5_caches():
                     (year, np.nanmean(vals))
                 )
 
-    # 算趋势
+    # ✅ Step 2: 算趋势
     md_coeffs = {}
 
     for key, entries in md_series.items():
@@ -743,7 +745,7 @@ def compute_and_save_seas5_caches():
 
         md_coeffs[key] = (intercept, slope, yr_mean)
 
-    # 应用 detrend
+    # ✅ Step 3: 应用 detrend
     anom_det_by_year = {}
 
     for year, arr in anom_raw_by_year.items():
@@ -770,13 +772,13 @@ def compute_and_save_seas5_caches():
         anom_det_by_year[year] = det.astype(np.float32)
 
         print(f"  detrended {year}")
-        #  保存 raw
+        # ✅ 保存 raw
         save_seas5_anom(NPZ_SEAS5_RAW, anom_raw_by_year)
 
-        #  保存 det
+        # ✅ 保存 det
         save_seas5_anom(NPZ_SEAS5_DET, anom_det_by_year)
 
-        #  保存 meta
+        # ✅ 保存 meta
         all_data_meta = {}
         for y, info in meta_by_year.items():
             all_data_meta[y] = {
