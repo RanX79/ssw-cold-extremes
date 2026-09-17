@@ -67,15 +67,22 @@ MONTHS_DJF = [11, 12, 1, 2, 3]
 BASELINE_START = 1981
 BASELINE_END   = 2010
 
-SEAS5_SSW_CSV = Path(r"path/to/your/data/SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
-ERA5_SSW_CSV  = Path(r"path/to/your/data/ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
+DAY_START      = 8
+DAY_END        = 52
+COMBINED_WINDOW_string = f"day {DAY_START} - day {DAY_END})"
+COMBINED_WINDOW    = (DAY_START, DAY_END, COMBINED_WINDOW_string)
 
-OUTPUT_DIR = Path(r"path/to/your/results/")
+
+SEAS5_SSW_CSV = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+# SEAS5_SSW_CSV = Path(r"F:\data\IFS_daily\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_biascorrected_1981_2024.csv")
+ERA5_SSW_CSV  = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure\ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
+
+OUTPUT_DIR = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-PNG_OUT = OUTPUT_DIR / f"SI1_SEAS5_ERA5_frequency_U_t2m_sliding_{BASELINE_END}.pdf"
-NPZ_U10 = OUTPUT_DIR / f"SI1_cache_u10_{BASELINE_END}.npz"
-NPZ_T2M = OUTPUT_DIR / f"SI1_cache_t2m_{BASELINE_END}.npz"
+PNG_OUT = OUTPUT_DIR / f"SI1_SEAS5_ERA5_frequency_U_t2m_sliding_day{DAY_START}to{DAY_END}_{BASELINE_END}_NewNA.pdf"
+NPZ_U10 = OUTPUT_DIR / f"SI1_cache_u10_day{DAY_START}to{DAY_END}_{BASELINE_END}_NewNA.npz"
+NPZ_T2M = OUTPUT_DIR / f"SI1_cache_t2m_day{DAY_START}to{DAY_END}_{BASELINE_END}_NewNA.npz"
 
 COL_RED        = "#ED4043"
 COL_BLUE       = "#1C6AB1"
@@ -106,13 +113,13 @@ MONTH_LABELS = ["Nov", "Dec", "Jan", "Feb", "Mar"]
 # ================================================================
 # CODE 2 SETTINGS — paths updated to daily file directory
 # ================================================================
-ERA5_U10_PATH       = Path(r"path/to/your/data/ERA5_u_daily_1940_2025_10_no229.nc")
-SEAS5_U10_DAILY_DIR = Path(r"path/to/your/data/IFS_U10_daily")
+ERA5_U10_PATH       = Path(r"F:\data\ERA5_data\ERA5_u_daily_1940_2025_10_no229.nc")
+SEAS5_U10_DAILY_DIR = Path(r"F:\data\IFS_U10_daily")
 U10_FILE_PATTERN    = "SEAS5_u10hPa_NH_{year}11_system51_m25_daily.nc"
 U_VAR_CANDIDATES    = ["u", "u10", "uwnd", "var131"]
 
-DAY_START_U10      = 15
-DAY_END_U10        = 59
+DAY_START_U10      = 0
+DAY_END_U10        = 29
 MIN_VALID_FRAC_U10 = 0.8
 N_DAYS_U10         = DAY_END_U10 - DAY_START_U10 + 1
 MIN_DAYS_U10       = int(N_DAYS_U10 * MIN_VALID_FRAC_U10)
@@ -120,19 +127,24 @@ MIN_DAYS_U10       = int(N_DAYS_U10 * MIN_VALID_FRAC_U10)
 # ================================================================
 # CODE 3 SETTINGS — paths updated to daily file directory
 # ================================================================
-ERA5_T2M_PATH       = Path(r"path/to/your/data/ERA5_t2m_daily_1940_2024_no229.nc")
-SEAS5_T2M_DAILY_DIR = Path(r"path/to/your/data/IFS_t2m_daily")
+ERA5_T2M_PATH       = Path(r"F:\data\ERA5_data\ERA5_t2m_daily_1940_2024_no229.nc")
+SEAS5_T2M_DAILY_DIR = Path(r"F:\data\IFS_t2m_daily")
 T2M_FILE_PATTERN    = "SEAS5_2mt_NH_{year}11_system51_m25_daily.nc"
 T2M_VAR_CANDIDATES  = ["t2m","2m_temperature"]
 
-DAY_START_T      = 15
-DAY_END_T        = 59
+DAY_START_T      = DAY_START
+DAY_END_T        = DAY_END
 MIN_VALID_FRAC_T = 0.8
 N_DAYS_T         = DAY_END_T - DAY_START_T + 1
 MIN_DAYS_T       = int(N_DAYS_T * MIN_VALID_FRAC_T)
 
+# REGION_BOXES = {
+#     "NorthAmerica": {"lat_min": 45, "lat_max": 70, "lon_min": -140, "lon_max": -60},
+#     "Europe":       {"lat_min": 45, "lat_max": 70, "lon_min":   0,  "lon_max":  40},
+#     "EastAsia":      {"lat_min": 45, "lat_max": 70, "lon_min":  60,  "lon_max": 120},
+# }
 REGION_BOXES = {
-    "NorthAmerica": {"lat_min": 45, "lat_max": 70, "lon_min": -140, "lon_max": -60},
+    "NorthAmerica": {"lat_min": 30, "lat_max": 47.5, "lon_min": -100, "lon_max": -60},
     "Europe":       {"lat_min": 45, "lat_max": 70, "lon_min":   0,  "lon_max":  40},
     "EastAsia":      {"lat_min": 45, "lat_max": 70, "lon_min":  60,  "lon_max": 120},
 }
@@ -821,7 +833,7 @@ def compute_and_save_t2m():
     gc.collect()
     save_cache_t2m(NPZ_T2M, e_raw, e_det, s_raw, s_det)
 
-    print("T2m cache complete")
+    print("T2m cache complete ✅")
 
 
 # ================================================================
@@ -1067,7 +1079,7 @@ def draw_U10_distribution(ax, e_v, s_v):
     handles.append(Line2D([], [], color='none'))
     ax.legend(handles, labels, loc='upper right', framealpha=0.95,fontsize=9)
 
-    ax.set_xlabel("Post-SSW mean U10 (m s$^{-1}$)")
+    ax.set_xlabel("Onset phase mean U10 (m s$^{-1}$)")
     ax.set_ylabel("Probability density")
    
     style_ax(ax, add_minor_y=False)
