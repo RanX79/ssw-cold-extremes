@@ -70,9 +70,9 @@ COL_ZERO  = "#8A8A8A"
 # ================================================================
 # USER SETTINGS
 # ================================================================
-SSW_CSV_PATH  = Path(r"path/to/your/data/SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
-T2M_DAILY_DIR = Path(r"path/to/your/data/IFS_t2m_daily")
-OUTPUT_DIR    = Path(r"path/to/your/results")
+SSW_CSV_PATH  = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+T2M_DAILY_DIR = Path(r"F:\data\IFS_t2m_daily")
+OUTPUT_DIR    = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 START_YEAR     = 1981
 END_YEAR       = 2024
@@ -91,24 +91,30 @@ U_LEVEL = 100
 
 
 if U_LEVEL == 10:
-    U_DIR       = Path(r"path/to/your/data/IFS_U10_daily")
+    U_DIR       = Path(r"F:\data\IFS_U10_daily")
     U_FILE_TMPL = "SEAS5_u10hPa_NH_{year}11_system51_m25_daily.nc"
     U_LABEL     = "U10hPa"
 elif U_LEVEL == 100:
-    U_DIR       = Path(r"path/to/your/data/IFS_U100_daily")
+    U_DIR       = Path(r"F:\data\IFS_U100_daily")
     U_FILE_TMPL = "SEAS5_u100hPa_NH_{year}11_system51_m25_daily.nc"
     U_LABEL     = "U100hPa"
 else:
     raise ValueError(f"U_LEVEL must be 10 or 100, got {U_LEVEL}")
 
 
-NPZ_CACHE = OUTPUT_DIR / f"SI6_regression_sensitivity_cache_{U_LABEL}_u{U_DAY_START}to{U_DAY_END}_t{T_DAY_START}to{T_DAY_END}_NDJFM_{BASELINE_END}.npz"
+NPZ_CACHE = OUTPUT_DIR / f"SI6_regression_sensitivity_cache_{U_LABEL}_u{U_DAY_START}to{U_DAY_END}_t{T_DAY_START}to{T_DAY_END}_NDJFM_{BASELINE_END}_NewNA.npz"
 
 
 
+
+# REGION_BOXES = {
+#     "NorthAmerica": {"lat_min": 45, "lat_max": 70, "lon_min": 220, "lon_max": 300},
+#     "Europe":       {"lat_min": 45, "lat_max": 70, "lon_min":   0, "lon_max":  40},
+#     "EastAsia":      {"lat_min": 45, "lat_max": 70, "lon_min":  60, "lon_max": 120},
+# }
 
 REGION_BOXES = {
-    "NorthAmerica": {"lat_min": 45, "lat_max": 70, "lon_min": 220, "lon_max": 300},
+    "NorthAmerica": {"lat_min": 30, "lat_max": 47.5, "lon_min": 260, "lon_max": 300},
     "Europe":       {"lat_min": 45, "lat_max": 70, "lon_min":   0, "lon_max":  40},
     "EastAsia":      {"lat_min": 45, "lat_max": 70, "lon_min":  60, "lon_max": 120},
 }
@@ -404,7 +410,7 @@ def build_baseline(all_data):
     doy_to_fields = {}
 
     # ----------------------------
-    # collect baseline
+    # Step 1: collect baseline
     # ----------------------------
     for year in range(BASELINE_START, BASELINE_END + 1):
 
@@ -426,7 +432,7 @@ def build_baseline(all_data):
         gc.collect()
 
     # ----------------------------
-    # raw climatology
+    # Step 2: raw climatology
     # ----------------------------
     sample = next(iter(doy_to_fields.values()))[0]
     nlat, nlon = sample.shape
@@ -442,7 +448,7 @@ def build_baseline(all_data):
     gc.collect()
 
     # ----------------------------
-    # rolling smoothing 
+    # Step 3: rolling smoothing ✅
     # ----------------------------
     window = 11
     pad = window // 2
@@ -466,7 +472,7 @@ def build_baseline(all_data):
     gc.collect()
 
     # ----------------------------
-    # map to month-day 
+    # Step 4: map to month-day ✅
     # ----------------------------
     baseline_clim = {}
 
@@ -542,7 +548,7 @@ def compute_trend_slopes(all_data, baseline_clim):
 
 
 # ================================================================
-# TREND SLOPES — U100 60°N 
+# TREND SLOPES — U100 60°N  ← 新增
 # ================================================================
 def compute_u_trend_slopes(u_data_all, baseline_u):
     print(f"Computing {U_LABEL} trend slopes at 60N ...")
@@ -771,7 +777,7 @@ def build_u_baseline(u_data_all):
     doy_to_fields = {}
 
     # ----------------------------
-    # collect baseline
+    # Step 1: collect baseline
     # ----------------------------
     for year in range(BASELINE_START, BASELINE_END + 1):
 
@@ -792,7 +798,7 @@ def build_u_baseline(u_data_all):
         gc.collect()
 
     # ----------------------------
-    # raw climatology
+    # Step 2: raw climatology
     # ----------------------------
     sample = next(iter(doy_to_fields.values()))[0]
     nlat, nlon = sample.shape
@@ -808,7 +814,7 @@ def build_u_baseline(u_data_all):
     gc.collect()
 
     # ----------------------------
-    # rolling smoothing
+    # Step 3: rolling smoothing ✅
     # ----------------------------
     window = 11
     pad = window // 2
@@ -832,7 +838,7 @@ def build_u_baseline(u_data_all):
     gc.collect()
 
     # ----------------------------
-    # map to month-day 
+    # Step 4: map to month-day ✅
     # ----------------------------
     baseline_u = {}
 
@@ -848,7 +854,7 @@ def build_u_baseline(u_data_all):
 
 
 # ================================================================
-# EXTRACT U STRENGTH — 同时输出 raw 和 detrended  
+# EXTRACT U STRENGTH — 同时输出 raw 和 detrended  ← 修改
 # ================================================================
 def extract_u_strength(u_data_all, baseline_u, u_trend_slopes):
     print(f"Extracting {U_LABEL} anomaly averaged over day {U_DAY_START} to +{U_DAY_END} ...")
@@ -1154,10 +1160,10 @@ def plot_regression_dual(result_dfs, u_strength_df,
             panel_label=panel_labels[3 + ri], show_legend=False
         )
         axes[1, ri].set_xlabel(
-            f"Raw 100 hPa U anomaly"
+            f"Detrended 100 hPa U anomaly"
         )
         axes[0, ri].set_xlabel(
-            f"Detrended 100 hPa U anomaly"
+            f"Raw 100 hPa U anomaly"
         )
         del df_t, merged_all
 
@@ -1229,7 +1235,7 @@ def main():
         result_dfs, u_strength_df,
         raw_col="raw_mean",
         det_col="det_mean",
-        output_png=str(OUTPUT_DIR / f"SI6_SSW_{U_LABEL}_regression_dual_mean_NDJFM_{BASELINE_END}.pdf")
+        output_png=str(OUTPUT_DIR / f"SI6_SSW_{U_LABEL}_regression_dual_mean_NDJFM_{BASELINE_END}_NewNA.pdf")
     )
 
 
