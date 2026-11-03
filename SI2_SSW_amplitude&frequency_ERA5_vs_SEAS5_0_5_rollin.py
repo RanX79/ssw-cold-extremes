@@ -32,8 +32,8 @@ from matplotlib.lines import Line2D
 # ================================================================
 # USER SETTINGS
 # ================================================================
-# SEAS5_SSW_CSV_PATH = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
-SEAS5_SSW_CSV_PATH = Path(r"F:\data\IFS_daily\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_biascorrected_1981_2024.csv")
+SEAS5_SSW_CSV_PATH = Path(r"F:\data\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_1981_2024.csv")
+# SEAS5_SSW_CSV_PATH = Path(r"F:\data\IFS_daily\SSW_results\SEAS5_first25members_SSW_dates_NDJFM_events_only_biascorrected_1981_2024.csv")
 ERA5_SSW_CSV_PATH  = Path(r"F:\data\paper_SSW_impacts_under_global_warming\figure\ERA5_SSW_dates_10hPa_NDJFM_events_only_1940_2024.csv")
 
 
@@ -56,19 +56,19 @@ ERA5BASELINE_END   = 2010
 TARGET_LAT            = 60.0
 INTENSITY_WINDOW_DAYS = 5
 MONTHS_DJF            = [11,12, 1, 2,3]
-N_BOOT                = 5000
+N_BOOT                = 1000
 RANDOM_SEED           = 42
 ROLLING_WINDOW_YEARS  = 10
 
 # NPZ cache file paths
-NPZ_ERA5_RAW   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_raw0_5_{BASELINE_END}_bias.npz"
-NPZ_ERA5_DET   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_det0_5_{BASELINE_END}_bias.npz"
-NPZ_SEAS5_RAW  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_raw0_5_{BASELINE_END}_bias.npz"
-NPZ_SEAS5_DET  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_det0_5_{BASELINE_END}_bias.npz"
-NPZ_SEAS5_META = OUTPUT_DIR / f"SI2_cache_SEAS5_meta0_5_{BASELINE_END}_bias.npz"
+NPZ_ERA5_RAW   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_raw0_5_{BASELINE_END}.npz"
+NPZ_ERA5_DET   = OUTPUT_DIR / f"SI2_cache_ERA5_anom_det0_5_{BASELINE_END}.npz"
+NPZ_SEAS5_RAW  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_raw0_5_{BASELINE_END}.npz"
+NPZ_SEAS5_DET  = OUTPUT_DIR / f"SI2_cache_SEAS5_anom_det0_5_{BASELINE_END}.npz"
+NPZ_SEAS5_META = OUTPUT_DIR / f"SI2_cache_SEAS5_meta0_5_{BASELINE_END}.npz"
 
-SUMMARY_CSV = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rolling_{BASELINE_END}_bias.csv"
-FIG_OUT     = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rollin_{BASELINE_END}_bias.pdf"
+SUMMARY_CSV = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rolling_{BASELINE_END}.csv"
+FIG_OUT     = OUTPUT_DIR / f"SI2_SSW_amplitude&frequency_ERA5_vs_SEAS5_0_5_rollin_{BASELINE_END}.pdf"
 
 
 # ================================================================
