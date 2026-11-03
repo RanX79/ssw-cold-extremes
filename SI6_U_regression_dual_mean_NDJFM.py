@@ -21,7 +21,6 @@ import matplotlib.ticker as mticker
 
 from pathlib import Path
 from scipy.stats import linregress
-from scipy.stats import t as t_dist, f as f_dist
 from matplotlib.lines import Line2D
 
 
@@ -80,6 +79,10 @@ N_MEMBERS      = 25
 BASELINE_START = 1981
 BASELINE_END   = 2010
 
+# bootstrap / permutation settings
+N_BOOT    = 1000
+BOOT_SEED = 42
+
 
 U_DAY_START = 0
 U_DAY_END   = 29
@@ -102,10 +105,7 @@ else:
     raise ValueError(f"U_LEVEL must be 10 or 100, got {U_LEVEL}")
 
 
-NPZ_CACHE = OUTPUT_DIR / f"SI6_regression_sensitivity_cache_{U_LABEL}_u{U_DAY_START}to{U_DAY_END}_t{T_DAY_START}to{T_DAY_END}_NDJFM_{BASELINE_END}_NewNA.npz"
-
-
-
+NPZ_CACHE = OUTPUT_DIR / f"SI6_regression_sensitivity_cache_{U_LABEL}_u{U_DAY_START}to{U_DAY_END}_t{T_DAY_START}to{T_DAY_END}_NDJFM_{BASELINE_END}_NewNA_bootCI.npz"
 
 # REGION_BOXES = {
 #     "NorthAmerica": {"lat_min": 45, "lat_max": 70, "lon_min": 220, "lon_max": 300},
@@ -330,7 +330,6 @@ def load_all_winters():
 
 
     return all_data, lat_vals, lon_vals
-
 
 
 def _load_year_t2m(info):
@@ -587,7 +586,6 @@ def compute_u_trend_slopes(u_data_all, baseline_u):
     return u_trend_slopes
 
 
-
 # ================================================================
 # EXTRACT T2M PER EVENT
 # ================================================================
@@ -751,7 +749,6 @@ def load_u_year(year):
         print(f"  Failed {U_LABEL} {year}: {e}")
         gc.collect()
         return None
-
 
 
 # def build_u_baseline(u_data_all):
@@ -961,20 +958,49 @@ def load_cache_npz(npz_path):
 
 
 # ================================================================
-# CHOW TEST
+# BOOTSTRAP / PERMUTATION  (replaces t-based CI/band and Chow test)
 # ================================================================
-def chow_test(x1, y1, x2, y2):
-    def ssr(x, y):
-        slope, intercept, _, _, _ = linregress(x, y)
-        resid = y - (intercept + slope * x)
-        return np.sum(resid ** 2), len(x)
-    ssr1, _         = ssr(x1, y1)
-    ssr2, _         = ssr(x2, y2)
-    ssr_pool, n_all = ssr(np.concatenate([x1, x2]), np.concatenate([y1, y2]))
-    k = 2
-    F = ((ssr_pool - (ssr1 + ssr2)) / k) / ((ssr1 + ssr2) / (n_all - 2 * k))
-    p = 1 - f_dist.cdf(F, dfn=k, dfd=n_all - 2 * k)
-    return F, p
+def _slopes_vec(X, Y):
+    """OLS slope and intercept along the last axis (vectorised)."""
+    xm = X.mean(axis=-1, keepdims=True)
+    ym = Y.mean(axis=-1, keepdims=True)
+    dx = X - xm
+    sl = (dx * (Y - ym)).sum(axis=-1) / (dx ** 2).sum(axis=-1)
+    ic = ym[..., 0] - sl * xm[..., 0]
+    return sl, ic
+
+
+
+def bootstrap_regression(x, y, n_boot=N_BOOT, seed=BOOT_SEED):
+    """Paired bootstrap of events -> arrays of slopes and intercepts."""
+    rng = np.random.default_rng(seed)
+    n = len(x)
+    idx = rng.integers(0, n, size=(n_boot, n))
+    return _slopes_vec(x[idx], y[idx])
+
+
+
+def boot_two_sided_p(boot_vals, n_boot=N_BOOT):
+    """Two-sided bootstrap p-value for 'slope = 0' (floored at 1/(n_boot+1))."""
+    p = 2 * min(np.mean(boot_vals <= 0), np.mean(boot_vals >= 0))
+    return float(min(1.0, max(p, 1.0 / (n_boot + 1))))
+
+
+
+def perm_slope_diff_test(x1, y1, x2, y2, n_perm=N_BOOT, seed=BOOT_SEED):
+    """Permutation test: are the regression slopes of the two periods equal?"""
+    rng = np.random.default_rng(seed)
+    n1 = len(x1)
+    xa = np.concatenate([x1, x2])
+    ya = np.concatenate([y1, y2])
+    obs = _slopes_vec(x2, y2)[0] - _slopes_vec(x1, y1)[0]
+    null = np.empty(n_perm)
+    for i in range(n_perm):
+        perm = rng.permutation(len(xa))
+        a, b = perm[:n1], perm[n1:]
+        null[i] = _slopes_vec(xa[b], ya[b])[0] - _slopes_vec(xa[a], ya[a])[0]
+    p = (1 + np.sum(np.abs(null) >= abs(obs))) / (n_perm + 1)
+    return float(obs), float(p)
 
 
 
@@ -1004,10 +1030,11 @@ def draw_regression_panel(ax, merged_all, y_col, u_col="u_anom",
         period_data[p_label] = (xv, yv, pcolor)
 
 
-        slope, intercept, r_val, p_val, se = linregress(xv, yv)
-        n_p    = len(xv)
-        t_crit = t_dist.ppf(0.975, df=n_p - 2)
-        ci_sl  = t_crit * se
+        slope, intercept, r_val, _, _ = linregress(xv, yv)
+
+        sl_b, ic_b = bootstrap_regression(xv, yv)
+        sl_lo, sl_hi = np.percentile(sl_b, [2.5, 97.5])
+        p_val = boot_two_sided_p(sl_b)
 
 
         ax.scatter(xv, yv, s=14, alpha=0.55,
@@ -1020,17 +1047,14 @@ def draw_regression_panel(ax, merged_all, y_col, u_col="u_anom",
                 color=cross_color, zorder=5)
 
 
-        x_fit   = np.linspace(xv.min(), xv.max(), 200)
-        x_mean  = xv.mean()
-        ss_x    = np.sum((xv - x_mean) ** 2)
-        resid   = yv - (intercept + slope * xv)
-        s_res   = np.sqrt(np.sum(resid ** 2) / (n_p - 2))
-        ci_band = t_crit * s_res * np.sqrt(1 / n_p + (x_fit - x_mean) ** 2 / ss_x)
-        y_fit   = intercept + slope * x_fit
-        ls      = "-" if p_val < 0.05 else "--"
+        x_fit = np.linspace(xv.min(), xv.max(), 200)
+        y_fit = intercept + slope * x_fit
+        band  = ic_b[:, None] + sl_b[:, None] * x_fit[None, :]
+        b_lo, b_hi = np.percentile(band, [2.5, 97.5], axis=0)
+        ls    = "-" if p_val < 0.05 else "--"
 
 
-        ax.fill_between(x_fit, y_fit - ci_band, y_fit + ci_band,
+        ax.fill_between(x_fit, b_lo, b_hi,
                         color=pcolor, alpha=0.10, zorder=1)
         ax.plot(x_fit, y_fit, color=pcolor, lw=1.7, ls=ls, zorder=3)
 
@@ -1039,7 +1063,7 @@ def draw_regression_panel(ax, merged_all, y_col, u_col="u_anom",
         ax.text(
             0.97, txt_y,
             f"{p_label}\n"
-            f"$\\beta$={slope:.2f}$\\pm${ci_sl:.2f}\n"
+            f"$\\beta$={slope:.2f} [{sl_lo:.2f}, {sl_hi:.2f}]\n"
             f"$R^2$={r_val**2:.2f}, {format_pval(p_val)}",
             transform=ax.transAxes, fontsize=8,
             ha="right", va="bottom", color=pcolor,
@@ -1047,15 +1071,15 @@ def draw_regression_panel(ax, merged_all, y_col, u_col="u_anom",
                       edgecolor=pcolor, linewidth=0.8, alpha=0.92),
             zorder=10
         )
-        del x_fit, x_mean, ss_x, resid, s_res, ci_band, y_fit
+        del x_fit, y_fit, band, sl_b, ic_b
 
 
     if len(period_data) == 2:
         labels = list(period_data.keys())
         x1, y1, _ = period_data[labels[0]]
         x2, y2, _ = period_data[labels[1]]
-        _, p_chow = chow_test(x1, y1, x2, y2)
-        ax.text(0.97, 0.97, f"Chow: {format_pval(p_chow)}",
+        _, p_perm = perm_slope_diff_test(x1, y1, x2, y2)
+        ax.text(0.97, 0.97, f"Slope diff. (perm.): {format_pval(p_perm)}",
                 transform=ax.transAxes, ha="right", va="top",
                 fontsize=8, color=COL_TEXT)
 
@@ -1094,7 +1118,6 @@ def draw_regression_panel(ax, merged_all, y_col, u_col="u_anom",
         ]
         ax.legend(handles=handles, loc="upper left", frameon=True,
                   fontsize=8, bbox_to_anchor=(0.04, 1))
-
 
 
 # ================================================================
@@ -1235,7 +1258,7 @@ def main():
         result_dfs, u_strength_df,
         raw_col="raw_mean",
         det_col="det_mean",
-        output_png=str(OUTPUT_DIR / f"SI6_SSW_{U_LABEL}_regression_dual_mean_NDJFM_{BASELINE_END}_NewNA.pdf")
+        output_png=str(OUTPUT_DIR / f"SI6_SSW_{U_LABEL}_regression_dual_mean_NDJFM_{BASELINE_END}_NewNA_bootCI.pdf")
     )
 
 
