@@ -46,7 +46,7 @@ TARGET_LAT       = 60.0
 DJF_MONTHS       = [12, 1, 2]
 POST_ONSET_DAYS  = 29
 MONTHS_NDJFM     = [11, 12, 1, 2, 3]
-N_BOOT           = 5000
+N_BOOT           = 1000
 RANDOM_SEED      = 42
 
 OUTPUT_DIR = Path(r"path/to/your/results")
