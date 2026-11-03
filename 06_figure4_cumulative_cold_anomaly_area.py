@@ -48,6 +48,11 @@ BASELINE_END   = 2010
 
 PERCENTILE_THRESHOLD = 10.0
 
+# bootstrap settings
+N_BOOT     = 1000
+BOOT_SEED  = 42
+BOOT_ALPHA = 0.05
+
 T2M_VAR_CANDIDATES = ["t2m", "2t", "2m_temperature", "t2m_daily"]
 
 # REGION_BOXES = {
@@ -92,17 +97,18 @@ REGION_ORDER = ["NorthAmerica", "Europe", "EastAsia"]
 # It is necessary to use 'npz' when adding 'high'. 
 # This is because the initial selected latitude was relatively low, 
 # and 'high' corresponds to generating data for high-latitude regions.
+# (cache renamed: new format stores bootstrap lo/hi instead of se)
 NPZ_PATH = OUTPUT_DIR / (
     f"fig4_SSW_cumColdArea_TanomP{int(PERCENTILE_THRESHOLD)}"
     f"_day{DAY_START}to{DAY_END}"
     f"_mem{N_MEMBERS}_{START_YEAR}_{END_YEAR}"
     f"_sliding{SLIDING_WINDOW}"
-    f"_NDJFM_daily_{BASELINE_END}_NewNA.npz"
+    f"_NDJFM_daily_{BASELINE_END}_NewNA_bootCI.npz"
 )
 
 PNG_PATH = str(OUTPUT_DIR / (
     f"fig4_SEAS5_SSW_cumColdArea_day{DAY_START}to{DAY_END}_TanomP{int(PERCENTILE_THRESHOLD)}"
-    f"_10yrsliding_NDJFM_daily_{BASELINE_END}_NewNA.pdf"
+    f"_10yrsliding_NDJFM_daily_{BASELINE_END}_NewNA_bootCI.pdf"
 ))
 
 # ================================================================
@@ -137,6 +143,25 @@ def month_day_key(ts):
 
 def get_daily_filepath(year):
     return T2M_DAILY_DIR / f"SEAS5_2mt_NH_{year}11_system51_m25_daily.nc"
+
+
+def bootstrap_mean_ci(values, rng, n_boot=N_BOOT, alpha=BOOT_ALPHA, batch=100):
+    """
+    Percentile bootstrap CI of the mean (values resampled with replacement).
+    Done in batches of replicates to limit memory for large samples.
+    """
+    v = np.asarray(values, dtype=np.float64)
+    v = v[np.isfinite(v)]
+    n = len(v)
+    if n < 2:
+        return np.nan, np.nan
+    boot_means = np.empty(n_boot, dtype=np.float64)
+    for b0 in range(0, n_boot, batch):
+        b1 = min(b0 + batch, n_boot)
+        idx = rng.integers(0, n, size=(b1 - b0, n))
+        boot_means[b0:b1] = v[idx].mean(axis=1)
+    lo, hi = np.percentile(boot_means, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return float(lo), float(hi)
 
 
 def read_year_data(year):
@@ -713,11 +738,13 @@ def aggregate_sliding_with_global_clim(ssw_df, meta_u, baseline_clim,
 
     ts = {
         rn: {
-            tag: {"xc": [], "mean": [], "se": [], "n": []}
+            tag: {"xc": [], "mean": [], "lo": [], "hi": [], "n": []}
             for tag in ["raw", "det", "clim_raw", "clim_det"]
         }
         for rn in REGION_ORDER
     }
+
+    boot_rng = np.random.default_rng(BOOT_SEED)
 
     def _append_stats(lst, d):
         vals = np.array(lst, dtype=float)
@@ -728,13 +755,17 @@ def aggregate_sliding_with_global_clim(ssw_df, meta_u, baseline_clim,
 
         if n == 0:
             d["mean"].append(np.nan)
-            d["se"].append(np.nan)
+            d["lo"].append(np.nan)
+            d["hi"].append(np.nan)
         elif n == 1:
             d["mean"].append(vals[0])
-            d["se"].append(np.nan)
+            d["lo"].append(np.nan)
+            d["hi"].append(np.nan)
         else:
             d["mean"].append(np.nanmean(vals))
-            d["se"].append(np.nanstd(vals, ddof=1) / np.sqrt(n))
+            lo, hi = bootstrap_mean_ci(vals, boot_rng)
+            d["lo"].append(lo)
+            d["hi"].append(hi)
 
     for ws, we in windows:
         dfp = ssw_df[ssw_df["init_year"].between(ws, we)]
@@ -895,7 +926,7 @@ def aggregate_sliding_with_global_clim(ssw_df, meta_u, baseline_clim,
 
     for rn in REGION_ORDER:
         for tag in ["raw", "det", "clim_raw", "clim_det"]:
-            for k in ["xc", "mean", "se", "n"]:
+            for k in ["xc", "mean", "lo", "hi", "n"]:
                 ts[rn][tag][k] = np.array(ts[rn][tag][k])
 
     return ts
@@ -912,7 +943,8 @@ def save_cache(path, ts):
             pfx = f"{rn}__{tag}"
             d[f"{pfx}__xc"]   = ts[rn][tag]["xc"]
             d[f"{pfx}__mean"] = ts[rn][tag]["mean"]
-            d[f"{pfx}__se"]   = ts[rn][tag]["se"]
+            d[f"{pfx}__lo"]   = ts[rn][tag]["lo"]
+            d[f"{pfx}__hi"]   = ts[rn][tag]["hi"]
             d[f"{pfx}__n"]    = ts[rn][tag]["n"]
 
     np.savez(path, **d)
@@ -935,7 +967,8 @@ def load_cache(path):
             pfx = f"{rn}__{tag}"
             ts[rn][tag]["xc"]   = data[f"{pfx}__xc"]
             ts[rn][tag]["mean"] = data[f"{pfx}__mean"]
-            ts[rn][tag]["se"]   = data[f"{pfx}__se"]
+            ts[rn][tag]["lo"]   = data[f"{pfx}__lo"]
+            ts[rn][tag]["hi"]   = data[f"{pfx}__hi"]
             ts[rn][tag]["n"]    = data[f"{pfx}__n"].astype(int)
 
     print(f"Loaded: {path}")
@@ -989,7 +1022,8 @@ def plot_results(ts):
             ts_plot[rn][tag] = {
                 "xc":   ts[rn][tag]["xc"].copy(),
                 "mean": ts[rn][tag]["mean"].copy() / N_DAYS,
-                "se":   ts[rn][tag]["se"].copy() / N_DAYS,
+                "lo":   ts[rn][tag]["lo"].copy() / N_DAYS,
+                "hi":   ts[rn][tag]["hi"].copy() / N_DAYS,
                 "n":    ts[rn][tag]["n"].copy(),
             }
 
@@ -1014,22 +1048,24 @@ def plot_results(ts):
 
             xc = ts_plot[rn][clim_tag]["xc"]
             mean = ts_plot[rn][clim_tag]["mean"]
-            se = ts_plot[rn][clim_tag]["se"]
+            lo = ts_plot[rn][clim_tag]["lo"]
+            hi = ts_plot[rn][clim_tag]["hi"]
 
             valid = np.isfinite(mean)
-            xv, mv, sv = xc[valid], mean[valid], se[valid]
+            xv, mv = xc[valid], mean[valid]
+            lov, hiv = lo[valid], hi[valid]
 
             if len(xv) == 0:
                 continue
 
             ax.plot(xv, mv, color=col, lw=1.6, ls="--", alpha=0.65, zorder=1)
 
-            good_se = np.isfinite(sv)
-            if good_se.sum() > 0:
+            good_ci = np.isfinite(lov) & np.isfinite(hiv)
+            if good_ci.sum() > 0:
                 ax.fill_between(
-                    xv[good_se],
-                    (mv - 1.96 * sv)[good_se],
-                    (mv + 1.96 * sv)[good_se],
+                    xv[good_ci],
+                    lov[good_ci],
+                    hiv[good_ci],
                     color=col,
                     alpha=0.08,
                     zorder=1,
@@ -1066,20 +1102,22 @@ def plot_results(ts):
 
             xc = ts_plot[rn][tag]["xc"]
             mean = ts_plot[rn][tag]["mean"]
-            se = ts_plot[rn][tag]["se"]
+            lo = ts_plot[rn][tag]["lo"]
+            hi = ts_plot[rn][tag]["hi"]
 
             valid = np.isfinite(mean)
-            xv, mv, sv = xc[valid], mean[valid], se[valid]
+            xv, mv = xc[valid], mean[valid]
+            lov, hiv = lo[valid], hi[valid]
 
             if len(xv) == 0:
                 continue
 
-            good_se = np.isfinite(sv)
-            if good_se.sum() > 0:
+            good_ci = np.isfinite(lov) & np.isfinite(hiv)
+            if good_ci.sum() > 0:
                 ax.fill_between(
-                    xv[good_se],
-                    (mv - 1.96 * sv)[good_se],
-                    (mv + 1.96 * sv)[good_se],
+                    xv[good_ci],
+                    lov[good_ci],
+                    hiv[good_ci],
                     color=col,
                     alpha=0.22,
                     zorder=2,
